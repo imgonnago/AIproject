@@ -7,3 +7,5 @@
 **Actor** : Qwen2.5VL 3B + 4bit + LoRA + GRPO
 
 **Simulator** : LIBERO-long
+
+**OpenVLA** : https://github.com/openvla/openvla.git
