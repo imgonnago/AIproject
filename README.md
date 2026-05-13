@@ -58,5 +58,5 @@
 
   이 둘을 concat
 ---
-**<train>**
+**<train_file>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
