@@ -14,6 +14,7 @@
 **- LIBERO** : https://github.com/Lifelong-Robot-Learning/LIBERO.git
 ---
 #github file structure
+
 **<openvla_planner>**
 - openvla inference code
   
@@ -31,7 +32,7 @@
   
   -> openvla 의 action tokeinzer원본.
   확인하면서 코딩하기 위해 편의성으로 유지.
-
+---
 **<qwen_actor>**
 - Qwen2.5VL
   
@@ -53,6 +54,6 @@
   image, text -> qwen processor(LLM vocabulary에 openvla의 action token 256개 추가)
 
   이 둘을 concat
-
+---
 **<train>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
