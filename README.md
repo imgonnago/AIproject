@@ -50,9 +50,9 @@
   -> qwen에 붙여줄 action tokenizer 구현.
   input(actoin token) -> projection layer
   
-                 concat
-  
   image, text -> qwen processor(LLM vocabulary에 openvla의 action token 256개 추가)
+
+  이 둘을 concat
 
 **<train>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
