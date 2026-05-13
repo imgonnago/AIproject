@@ -9,6 +9,7 @@
 **Simulator** : LIBERO-long
 ---
 **Back Bone Model URL**
+
 **- OpenVLA** : https://github.com/openvla/openvla.git
 
 **- Qwen2.5VL** : https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2_5_vl
