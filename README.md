@@ -21,7 +21,7 @@
   transformer로 로드하면 됨.
   모델은 **openvla-7b-finetuned-libero-10** 로 로드
   
-- zeroMQ
+- **zeroMQ**
   -> actor로 출력물인 action token을 반환 하기위해 전송하는 코드.
   직접 구현해야함.
   
@@ -33,15 +33,18 @@
 - Qwen2.5VL
   -> qwen2.5vl 전체코드를 유지.
   토크나이저와 projection layer등을 구현하여 적용시켜야 하므로 전체 코드를 보면서 코딩하기 위함.
-- qwen_llm_tokenizer
+- **qwen_llm_tokenizer**
   -> LLM tokenizer에 openvla의 256개 action token을 추가.
-- projection_layer
+- **projection_layer**
   -> openvla와 qwen2.5vl의 토크나이저 임베딩 공간이 달라서 이를 맞춰주기위한 layer.
+  
   openvla의 4096차원 action 임베딩을 그냥 넣으면 차원이 안 맞음.
-- actoin tokenizer
+- **actoin tokenizer**
   -> qwen에 붙여줄 action tokenizer 구현.
   input(actoin token) -> projection layer
+  
                  concat
+  
   image, text -> qwen processor(LLM vocabulary에 openvla의 action token 256개 추가)
 
 **<train>**
