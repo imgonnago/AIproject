@@ -1,12 +1,13 @@
 **AIproject**🚀
 ---
-비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발
+##비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
 
 **Actor** : Qwen2.5VL 3B + 4bit + LoRA + GRPO
 
-**Simulator** : LIBERO-long
+**Simulator** : LIBREO-Long
+
 ---
 **Back Bone Model URL**
 
@@ -15,8 +16,9 @@
 **- Qwen2.5VL** : https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2_5_vl
 
 **- LIBERO** : https://github.com/Lifelong-Robot-Learning/LIBERO.git
+
 ---
-#github file structure
+##github file structure
 
 **<openvla_planner>**
 - openvla inference code
@@ -35,6 +37,7 @@
   
   -> openvla 의 action tokeinzer원본.
   확인하면서 코딩하기 위해 편의성으로 유지.
+  
 ---
 **<qwen_actor>**
 - Qwen2.5VL
@@ -61,6 +64,7 @@
   image, text -> qwen processor(LLM vocabulary에 openvla의 action token 256개 추가)
 
   이 둘을 concat
+  
 ---
 **<train_file>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
