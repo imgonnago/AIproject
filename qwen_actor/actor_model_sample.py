@@ -17,8 +17,8 @@ from PIL import Image
 # zeroMQ를 구현하지 않아서 전체 코드는 아직 작성하지 않음. 모든 코드 작성 후 actor_model파일을 작성해야함.
 
 
-openvla_dim = 4096  # OpenVLA LLaMA-2 hidden size
-qwen_dim    = 2048  # Qwen2.5-VL 3B hidden size
+#openvla_dim = 4096 OpenVLA LLaMA-2 hidden size
+#qwen_dim    = 2048 Qwen2.5-VL 3B hidden size
 # ─────────────────────────────────────────
 # 2. Actor Model
 # ─────────────────────────────────────────
@@ -42,7 +42,7 @@ class ActorModel(nn.Module):
     """
 
     def __init__(self):
-        super(ActorModel, self).__init__()
+        super(ActorModel,self, openvla_dim = 4096 ,qwen_dim = 2048).__init__()
 
         # ── 2-1. Qwen2.5-VL 로드 ──────────────────
         print("Qwen2.5-VL 3B 로드 중...")
