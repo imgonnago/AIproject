@@ -23,20 +23,9 @@ vla.eval()
 print("모델 로드 완료!")
 
 def get_action_tokens(
-    image: Image.Image,
-    instruction: str
+    image: Image.Image, # 로봇 이미지
+    instruction: str # 명령 텍스트
 ) -> np.ndarray:
-    """
-    이미지와 태스크 명령을 받아 action token ID 7개를 반환한다.
-
-    Args:
-        image: PIL Image (로봇 카메라 이미지)
-        instruction: 태스크 명령 텍스트
-
-    Returns:
-        action_token_ids: np.ndarray, shape (7,), dtype int
-    """
-
     # 프롬프트 포맷 (OpenVLA 공식 포맷)
     prompt = f"In: What action should the robot take to {instruction}?\nOut:"
 
