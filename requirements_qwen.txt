@@ -84,3 +84,4 @@ urllib3==2.7.0
 xxhash==3.7.0
 yarl==1.23.0
 zipp==3.23.1
+pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
