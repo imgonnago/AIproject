@@ -52,6 +52,9 @@
 
   **LLaVA** : https://github.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py
 
+  - **actor_model**
+
+    -> qwen에 4bit quantizaton + LoRA를 적용시키고 zeroMQ와 통합한 actor의 실행파일.
 
 **<train_file>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
