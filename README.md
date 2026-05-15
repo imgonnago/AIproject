@@ -33,8 +33,8 @@
   
   -> openvla 의 action tokeinzer원본.
   확인하면서 코딩하기 위해 편의성으로 유지.
+
   
----
 **<qwen_actor>**
 - **actor_action_tokenizer**
   
@@ -52,6 +52,6 @@
 
   **LLaVA** : https://github.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py
 
----
+
 **<train_file>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
