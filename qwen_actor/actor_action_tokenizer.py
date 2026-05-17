@@ -4,10 +4,9 @@ import torch.nn as nn
 from projection_layer import Projection
 
 #openvla LLM vocab size
-OPENVLA_VOCAB_SIZE = 32000
 
 class ActorActionTokenizer:
-    def __init__(self, processor, qwen_model, projection):
+    def __init__(self, processor, qwen_model, projection, OPENVLA_VOCAB_SIZE = 32000):
         self.bins = np.linspace(-1, 1, 256) # 256 bins between -1 and 1
         self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2.0 # bin centers for decoding
         self.min_action = -1 # action 값의 최소값 (클리핑, bin 간격의 하한 설정)
@@ -15,6 +14,7 @@ class ActorActionTokenizer:
         self.processor = processor #qwen 모델의 processor (tokenizer + feature extractor)
         self.qwen_model = qwen_model # Qwen 모델 (action token 임베딩 레이어 resize 필요)
         self.projection = projection # OpenVLA 임베딩 → Qwen 모델 입력 임베딩으로 변환하는 Projection Layer (LayerNorm + MLP)
+        self.OPENVLA_VOCAB_SIZE = OPENVLA_VOCAB_SIZE
 
         # OpenVLA에서 추출한 action token 임베딩으로 초기화된 임베딩 레이어 (새로 추가된 256개 토큰)
         action_embed_weights = torch.load(
