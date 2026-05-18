@@ -26,7 +26,7 @@ from qwen_actor.actor_model import ActorModel
 # 설정값
 # ─────────────────────────────────────────
 
-TASK_SUITE    = "libero_long"   # LIBERO-Long (libero_10)
+TASK_SUITE    = "libero_10"   # LIBERO-Long (libero_10)
 TASK_IDS      = [0, 1, 2]      # 학습할 태스크 3개 (0~9 중 선택)
 NUM_EPISODES  = 500             # 태스크당 학습 에피소드 수
 MAX_STEPS     = 300             # 에피소드당 최대 스텝 수
@@ -51,7 +51,8 @@ def make_env(task_id: int):
     """
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite     = benchmark_dict[TASK_SUITE]()
-    task_name      = task_suite.get_task_name(task_id)
+    task_names = task_suite.get_task_names() 
+    task_name  = task_names[task_id]  
     task_bddl_file = task_suite.get_task_bddl_file_path(task_id)
 
     print(f"태스크 로드: {task_name}")
