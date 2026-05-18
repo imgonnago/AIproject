@@ -1,6 +1,6 @@
 <div align="center"><h1>AIproject🚀</h1></div>
 
-![Static Badge](https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F)
+![Static Badge](https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F&fontSize=30)
 ![Static Badge](https://img.shields.io/badge/PYTORCH-2.12.0%2Bcpu-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F)
 
 
