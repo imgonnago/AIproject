@@ -65,9 +65,9 @@
 
   **LLaVA** : [LLaVA](https://github.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py)
 
-  - **actor_model**
+- **actor_model**
 
-    > qwen에 4bit quantizaton + LoRA를 적용시키고 zeroMQ와 통합한 actor의 실행파일.
+  > qwen에 4bit quantizaton + LoRA를 적용시키고 zeroMQ와 통합한 actor의 실행파일.
 
 ---
 
@@ -81,11 +81,9 @@
 
 **📁assets**
 
-  openvla actoin embedding 파라미터를 다운받는 파일임.
-  
-  모델 실행하기 전 꼭 한번 실행시켜야함.
-  
-  openvla_action_embeddings.pt 파일을 생성함.
+  ＞openvla actoin embedding 파라미터를 다운받는 파일임.
+  ＞모델 실행하기 전 꼭 한번 실행시켜야함.
+  ＞openvla_action_embeddings.pt 파일을 생성함.
 
 ---
 
