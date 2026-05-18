@@ -58,3 +58,8 @@
 
 **<train_file>**
 - GRPO로 학습할 수 있도록 train 코드를 구현해야 함.
+
+---
+
+torch version (qwen)
+pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124
