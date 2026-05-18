@@ -4,12 +4,10 @@
   <img src="https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
 </a>
 &nbsp;
-
 <a href="https://pytorch.org/get-started/locally/">
   <img src="https://img.shields.io/badge/PYTORCH-openvla%202.12.0%20%2Bcpu%20-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F" height="40"/>
 </a>
 &nbsp;
-
 <a href="https://www.python.org/">
   <img src="https://img.shields.io/badge/Python-3.10-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%2355adf4&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F" height="40"/>
 </a>
@@ -90,5 +88,8 @@
 ---
 
 torch version (qwen)
-
 'pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124'
+
+torch version (openvla)
+'pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu \
+    --index-url https://download.pytorch.org/whl/cpu'
