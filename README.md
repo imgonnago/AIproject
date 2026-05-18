@@ -2,7 +2,8 @@
 ---
 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발
 
-[GitHub Stats](https://github.com/imgonnago/AIproject.git)
+![React](https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
+
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
 
@@ -13,11 +14,11 @@
 ---
 **Back Bone Model URL**
 
-**- OpenVLA** : https://github.com/openvla/openvla.git
+**- OpenVLA** : [openvla](https://github.com/openvla/openvla.git)
 
-**- Qwen2.5VL** : https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2_5_vl
+**- Qwen2.5VL** : [Qwen2.5VL](https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2_5_vl)
 
-**- LIBERO** : https://github.com/Lifelong-Robot-Learning/LIBERO.git
+**- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
 
 ---
 **github file structure**
