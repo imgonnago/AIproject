@@ -88,8 +88,11 @@
 ---
 
 torch version (qwen)
-'pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124'
+
+'pip install torch torchvision torchaudio \ 
+  --index-url https://download.pytorch.org/whl/cu124'
 
 torch version (openvla)
+
 'pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu'
