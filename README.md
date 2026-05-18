@@ -1,4 +1,4 @@
-<h1>**AIproject**🚀</h1>
+<h1>AIproject🚀</h1>
 
 ![PYTORCH](https://img.shields.io/badge/PYTORCH-passing-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F)
 
