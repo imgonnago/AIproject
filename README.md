@@ -82,5 +82,8 @@
 
   openvla_action_embeddings.pt 파일을 생성함.
 
+---
+
 torch version (qwen)
-pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124
+
+'pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124'
