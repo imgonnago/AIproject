@@ -20,16 +20,18 @@
 **Simulator** : LIBREO-Long
 
 ---
-**Back Bone Model URL**
 
+**Back Bone Model URL**
+---
 **- OpenVLA** : [openvla](https://github.com/openvla/openvla.git)
 
 **- Qwen2.5VL** : [Qwen2.5VL](https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2_5_vl)
 
 **- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
 
----
+
 **github file structure**
+---
 
 **📁openvla_planner**
 
@@ -85,9 +87,8 @@
   > openvla action embedding 파라미터를 다운받는 파일.
   > 모델 실행시키기 전에 무조건 한 번 실행시켜야함.
 
----
 PYTORCH VERSION (나머지는 requirements file 참고)
-
+---
 torch version (qwen)
 
 `pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124`
