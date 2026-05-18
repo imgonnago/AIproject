@@ -1,6 +1,7 @@
 <div align="center"><h1>AIproject🚀</h1></div>
 
-![PYTORCH](https://img.shields.io/badge/PYTORCH-passing-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F)
+qwen : ![PYTORCH](https://img.shields.io/badge/PYTORCH-2.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a&link=https%3A%2F%2Fpytorch.org%2Fget-started%2Flocally%2F)
+)
 
 ---
 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발
