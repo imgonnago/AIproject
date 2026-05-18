@@ -31,7 +31,7 @@
 ---
 **github file structure**
 
-**<openvla_planner>**
+**📁openvla_planner**
 
 - **openvla inference code**
   
@@ -48,7 +48,7 @@
 
 ---
 
-**<qwen_actor>**
+**📁qwen_actor**
 
 - **actor_action_tokenizer**
   
@@ -71,7 +71,7 @@
 
 ---
 
-**<train_file>**
+**📁train_file**
 
 - **train**
   > main역할을 하는 파일임. GRPO와 LIBERO를 실행.
