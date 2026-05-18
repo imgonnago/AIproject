@@ -80,6 +80,7 @@
 ---
 
 **📁assets**
+
   openvla actoin embedding 파라미터를 다운받는 파일임.
   
   모델 실행하기 전 꼭 한번 실행시켜야함.
