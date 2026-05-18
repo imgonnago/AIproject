@@ -86,6 +86,7 @@
   > 모델 실행시키기 전에 무조건 한 번 실행시켜야함.
 
 ---
+PYTORCH VERSION (나머지는 requirements file 참고)
 
 torch version (qwen)
 
