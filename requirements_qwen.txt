@@ -70,7 +70,7 @@ qwen-vl-utils==0.0.14
 regex==2026.5.9
 requests==2.34.0
 rich==15.0.0
-robosuite==1.5.2
+robosuite==1.4.1
 safetensors==0.7.0
 scipy==1.15.3
 shellingham==1.5.4
