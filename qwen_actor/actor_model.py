@@ -33,7 +33,7 @@ from peft import (
 from qwen_vl_utils import process_vision_info
 
 from projection_layer import Projection
-from actor_action_tokenizer import ActorActionTokenizer, OPENVLA_VOCAB_SIZE
+from actor_action_tokenizer import ActorActionTokenizer
 
 
 # ─────────────────────────────────────────

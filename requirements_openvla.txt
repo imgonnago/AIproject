@@ -1,124 +1,100 @@
 absl-py==2.4.0
 accelerate==1.13.0
-annotated-types==0.7.0
-array-record==0.4.1
+array_record==0.8.1
 astunparse==1.6.3
 attrs==26.1.0
-bitsandbytes==0.49.2
-brotlicffi @ file:///C:/miniconda3/conda-bld/brotlicffi_1764961372591/work
-certifi @ file:///C:/Users/task_177697112580224/croot/certifi_1776971236755/work/certifi
-cffi @ file:///C:/miniconda3/conda-bld/cffi_1761832794697/work
-charset-normalizer @ file:///C:/miniconda3/conda-bld/charset-normalizer_1761744944645/work
-click==8.3.3
-colorama==0.4.6
+certifi==2026.4.22
+cffi==2.0.0
+charset-normalizer==3.4.7
 contourpy==1.3.2
 cryptography==48.0.0
 cycler==0.12.1
-dlimp @ git+https://github.com/moojink/dlimp_openvla@040105d256bd28866cc6620621a3d5f7b6b91b46
+dlimp==0.0.1
 dm-tree==0.1.10
-draccus==0.8.0
+docstring_parser==0.18.0
+draccus==0.11.5
 einops==0.8.2
 etils==1.13.0
-filelock @ file:///C:/Users/task_176943980686702/croot/filelock_1769440565956/work
+filelock==3.29.0
 flatbuffers==25.12.19
 fonttools==4.62.1
 fsspec==2026.4.0
 gast==0.7.0
-gitdb==4.0.12
-GitPython==3.1.50
-gmpy2 @ file:///C:/miniconda3/conda-bld/gmpy2_1764748105976/work
 google-auth==2.52.0
 google-auth-oauthlib==1.4.0
 google-pasta==0.2.0
 grpcio==1.80.0
 h5py==3.16.0
+hf_transfer==0.1.9
+hf-xet==1.5.0
 huggingface_hub==0.36.2
-idna @ file:///C:/miniconda3/conda-bld/idna_1761912044311/work
+idna==3.15
+immutabledict==4.3.1
 importlib_resources==7.1.0
-Jinja2 @ file:///C:/b/abs_920kup4e6u/croot/jinja2_1741711580669/work
-json-numpy==2.1.1
-jsonlines==4.0.0
+Jinja2==3.1.6
 keras==2.15.0
 kiwisolver==1.5.0
 libclang==18.1.1
 Markdown==3.10.2
-markdown-it-py==4.2.0
-MarkupSafe @ file:///C:/b/abs_a0ma7ge0jc/croot/markupsafe_1738584052792/work
+MarkupSafe==3.0.3
 matplotlib==3.10.9
-mdurl==0.1.2
 mergedeep==1.3.4
-mkl-service==2.4.0
-mkl_fft @ file:///C:/Users/dev-admin/mkl/mkl_fft_1730823082242/work
-mkl_random @ file:///C:/Users/dev-admin/mkl/mkl_random_1730822522280/work
 ml-dtypes==0.2.0
-mpmath @ file:///C:/b/abs_7833jrbiox/croot/mpmath_1690848321154/work
+mpmath==1.3.0
 mypy_extensions==1.1.0
-networkx @ file:///C:/b/abs_b054htfn9t/croot/networkx_1737043671910/work
-ninja==1.13.0
+networkx==3.4.2
 numpy==1.26.4
 oauthlib==3.3.1
-OpenEXR==3.4.11
--e git+https://github.com/openvla/openvla.git@c8f03f48af692657d3060c19588038c7220e9af9#egg=openvla
 opt_einsum==3.4.0
 packaging==26.0
 peft==0.11.1
-pillow @ file:///C:/b/abs_b50vowcrzo/croot/pillow_1738010273782/work
-platformdirs==4.9.6
+pillow==12.2.0
+pip==26.0.1
 promise==2.3
 protobuf==4.25.9
 psutil==7.2.2
+pyarrow==24.0.0
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
-pycparser @ file:///C:/Users/task_177495971250430/croot/pycparser_1774959822609/work
-pydantic==2.13.4
-pydantic_core==2.46.4
-Pygments==2.20.0
+pycparser==3.0
 pyparsing==3.3.2
-PySocks @ file:///C:/miniconda3/conda-bld/pysocks_1761753030270/work
 python-dateutil==2.9.0.post0
-PyYAML @ file:///C:/miniconda3/conda-bld/pyyaml_1763465513320/work
+PyYAML==6.0.3
 pyyaml-include==1.4.1
+pyzmq==27.1.0
 regex==2026.5.9
-requests @ file:///C:/Users/task_177506608527885/croot/requests_1775066155000/work
+requests==2.34.1
 requests-oauthlib==2.0.0
-rich==15.0.0
 safetensors==0.7.0
 scipy==1.15.3
-sentencepiece==0.1.99
-sentry-sdk==2.59.0
+sentencepiece==0.2.1
+setuptools==70.2.0
+simple-parsing==0.1.8
 six==1.17.0
-smmap==5.0.3
 sympy==1.14.0
 tensorboard==2.15.2
 tensorboard-data-server==0.7.2
 tensorflow==2.15.0
-tensorflow-addons==0.22.0
-tensorflow-datasets==4.9.3
+tensorflow-datasets==4.9.10
 tensorflow-estimator==2.15.0
-tensorflow-graphics==2021.12.3
-tensorflow-intel==2.15.0
-tensorflow-io-gcs-filesystem==0.31.0
+tensorflow-io-gcs-filesystem==0.37.1
 tensorflow-metadata==1.17.3
 termcolor==3.3.0
 timm==0.9.10
 tokenizers==0.19.1
 toml==0.10.2
-torch==2.11.0+cu128
-torchaudio==2.11.0+cu128
-torchvision==0.26.0+cu128
+torch==2.12.0+cpu
+torchaudio==2.11.0+cpu
+torchvision==0.27.0+cpu
 tqdm==4.67.3
 transformers==4.40.1
-trimesh==4.12.2
-typeguard==2.13.3
+typeguard==4.5.1
+typing_extensions==4.15.0
 typing-inspect==0.9.0
-typing-inspection==0.4.2
-typing_extensions @ file:///C:/b/abs_ecq8gc0vbm/croot/typing_extensions_1756281142218/work
-urllib3 @ file:///C:/Users/task_176781036207501/croot/urllib3_1767810484846/work
-wandb==0.26.1
+tyro==1.0.13
+urllib3==2.7.0
 Werkzeug==3.1.8
-win_inet_pton @ file:///C:/miniconda3/conda-bld/win_inet_pton_1761746276406/work
+wheel==0.46.3
 wrapt==1.14.2
 zipp==3.23.1
-#여기 파이토치 부분은 cpu를 사용할거면 cpu버전 gpu 사용할거면 cuda128버전 사용.
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+zmq==0.0.0
