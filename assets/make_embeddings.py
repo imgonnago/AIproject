@@ -3,7 +3,7 @@ import torch
 from transformers import AutoModelForVision2Seq
 
 print("OpenVLA-7B Long 버전 모델 로드 중 (임베딩 추출용)...")
-# ⚠️ 본인이 다운받으려는 정확한 Long 버전 허깅페이스 ID로 변경하세요!
+
 model_id = "openvla/openvla-7b-finetuned-libero-10"
 
 model = AutoModelForVision2Seq.from_pretrained(

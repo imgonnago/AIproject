@@ -3,6 +3,10 @@ GRPO 학습 스크립트
 - 환경: LIBERO-Long 3개 태스크, 각 500 에피소드
 - TRL GRPOTrainer 대신 직접 GRPO 구현
 - LIBERO 환경 reward를 직접 사용
+
+실행 전 준비:
+    터미널 1 (openvla_env): python openvla_planner/openvla_inference_code.py
+    터미널 2 (qwen_env):   python train/train.py
 """
 
 import sys
@@ -15,26 +19,23 @@ from PIL import Image
 from torch.optim import AdamW
 from libero.libero import benchmark
 from libero.libero.envs import OffScreenRenderEnv
-from actor_model import ActorModel
+from qwen_actor.actor_model import ActorModel
 
 
 # ─────────────────────────────────────────
 # 설정값
 # ─────────────────────────────────────────
 
-TASK_SUITE   = "libero_long"
-TASK_IDS     = [0, 1, 2]
-NUM_EPISODES = 500
-MAX_STEPS    = 300
-IMG_HEIGHT   = 224
-IMG_WIDTH    = 224
-SAVE_PATH    = "checkpoints"
-
-# GRPO 설정
-GROUP_SIZE   = 4        # 같은 상태에서 샘플링할 action 수 (G)
-                        # 메모리 제한으로 2~4 권장
+TASK_SUITE    = "libero_long"   # LIBERO-Long (libero_10)
+TASK_IDS      = [0, 1, 2]      # 학습할 태스크 3개 (0~9 중 선택)
+NUM_EPISODES  = 500             # 태스크당 학습 에피소드 수
+MAX_STEPS     = 300             # 에피소드당 최대 스텝 수
+IMG_HEIGHT    = 224             # 이미지 높이
+IMG_WIDTH     = 224             # 이미지 너비
+SAVE_PATH     = "checkpoints"   # 체크포인트 저장 경로
+GROUP_SIZE    = 4               # GRPO group sampling 수 (메모리 제한으로 2~4 권장)
 LEARNING_RATE = 1e-4
-GRAD_ACCUM    = 4       # gradient accumulation steps
+GRAD_ACCUM    = 4               # gradient accumulation steps
 
 
 # ─────────────────────────────────────────
@@ -70,6 +71,28 @@ def get_image_from_obs(obs: dict) -> Image.Image:
 
 
 # ─────────────────────────────────────────
+# 보상 함수
+# ─────────────────────────────────────────
+
+def reward_fn(info: dict, done: bool) -> float:
+    """
+    보상 함수. 여기만 수정하면 보상 설계 변경 가능.
+
+    현재: binary reward (성공 1.0 / 실패 0.0)
+    향후: dense reward 추가 가능
+        - gripper와 목표물 거리 기반
+        - 태스크 진행 단계 기반
+
+    :param info: LIBERO 환경 info dict
+    :param done: 에피소드 종료 여부
+    :return: reward (float)
+    """
+    if info.get("success", False):
+        return 1.0
+    return 0.0
+
+
+# ─────────────────────────────────────────
 # GRPO 핵심 로직
 # ─────────────────────────────────────────
 
@@ -79,7 +102,7 @@ def compute_grpo_loss(
     instruction: str,
     env,
     group_size: int = GROUP_SIZE
-) -> torch.Tensor:
+) -> tuple:
     """
     단일 상태에서 GRPO loss 계산.
 
@@ -90,19 +113,44 @@ def compute_grpo_loss(
            advantage = (reward - mean) / std
         4. log_prob * advantage로 policy gradient loss 계산
 
+    수정 사항:
+        - group sampling 중 env.reset() 제거
+          → 같은 상태에서 모든 샘플을 실행해야 GRPO가 유효함
+          → 대신 env.set_state()로 초기 상태 저장/복원
+        - obs 반환 추가
+          → 학습 루프에서 중복 env.step() 방지
+
     :param actor: ActorModel
     :param image: 현재 환경 이미지
     :param instruction: 태스크 명령
     :param env: LIBERO 환경
     :param group_size: 샘플링할 action 수
-    :return: GRPO loss (scalar tensor)
+    :return: (loss, obs, done, info) 튜플
+        - loss: GRPO loss (scalar tensor)
+        - obs: 마지막 샘플의 환경 관찰값
+        - done: 마지막 샘플의 에피소드 종료 여부
+        - info: 마지막 샘플의 환경 info
     """
-
     rewards   = []
     log_probs = []
+    last_obs  = None
+    last_done = False
+    last_info = {}
 
-    # 1. group_size개 action 샘플링 + reward 수집
-    for _ in range(group_size):
+    # 현재 환경 상태 저장 (같은 상태에서 group sampling)
+    try:
+        init_state = env.get_state()
+        use_state_restore = True
+    except AttributeError:
+        # get_state() 지원 안 하면 상태 복원 없이 진행
+        use_state_restore = False
+
+    # group_size개 action 샘플링 + reward 수집
+    for g in range(group_size):
+
+        # 같은 초기 상태에서 시작 (첫 번째 샘플 제외)
+        if g > 0 and use_state_restore:
+            env.set_state(init_state)
 
         # Actor forward → logits
         logits = actor.forward(image, instruction)
@@ -127,14 +175,15 @@ def compute_grpo_loss(
 
         # LIBERO 환경 실행 → reward
         obs, _, done, info = env.step(action_vector)
-        reward = 1.0 if info.get("success", False) else 0.0
+        reward = reward_fn(info, done)
         rewards.append(reward)
 
-        # 환경 리셋 (다음 샘플링을 위해)
-        if done:
-            env.reset()
+        # 마지막 샘플 결과 저장 (학습 루프에서 사용)
+        last_obs  = obs
+        last_done = done
+        last_info = info
 
-    # 2. advantage 계산 (Group 내 상대적 reward)
+    # advantage 계산 (Group 내 상대적 reward)
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
 
     if rewards_tensor.std() < 1e-8:
@@ -146,11 +195,11 @@ def compute_grpo_loss(
             / (rewards_tensor.std() + 1e-8)
         )
 
-    # 3. GRPO loss 계산
+    # GRPO loss 계산
     log_probs_tensor = torch.stack(log_probs)
     loss = -(log_probs_tensor * advantages.to(log_probs_tensor.device)).mean()
 
-    return loss
+    return loss, last_obs, last_done, last_info
 
 
 # ─────────────────────────────────────────
@@ -161,6 +210,7 @@ def run_episode(env, actor: ActorModel, instruction: str) -> dict:
     """
     단일 에피소드 실행 (성능 평가용).
     학습 루프와 별개로 현재 성능 확인에 사용.
+    gradient 계산 없음.
 
     :return: {"reward": float, "success": bool, "steps": int}
     """
@@ -170,10 +220,11 @@ def run_episode(env, actor: ActorModel, instruction: str) -> dict:
     for step in range(MAX_STEPS):
         image = get_image_from_obs(obs)
 
-        _, action_vector = actor.generate(
-            image=image,
-            instruction=instruction
-        )
+        with torch.no_grad():
+            _, action_vector = actor.generate(
+                image=image,
+                instruction=instruction
+            )
 
         obs, _, done, info = env.step(action_vector)
 
@@ -196,6 +247,19 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
     """
     단일 태스크 GRPO 학습.
     NUM_EPISODES 에피소드 동안 학습 + 주기적 평가.
+
+    학습 루프 구조:
+        에피소드 시작
+        └── 환경 리셋
+        └── 스텝 반복
+            ├── compute_grpo_loss() 호출
+            │   → group_size개 action 샘플링
+            │   → LIBERO 실행 → reward 수집
+            │   → advantage 계산
+            │   → loss 반환 + 마지막 obs 반환
+            ├── backward() → optimizer.step()
+            └── 반환된 obs로 다음 스텝 진행
+                (중복 env.step() 없음)
 
     :param actor: ActorModel
     :param task_id: LIBERO-Long 태스크 인덱스
@@ -220,19 +284,22 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
 
     for episode in range(NUM_EPISODES):
 
-        obs = env.reset()
+        obs          = env.reset()
         episode_loss = 0.0
-
+        step_count   = 0
         optimizer.zero_grad()
 
         for step in range(MAX_STEPS):
             image = get_image_from_obs(obs)
 
             # GRPO loss 계산
-            loss = compute_grpo_loss(
+            # compute_grpo_loss가 env.step()을 내부에서 실행하고
+            # 마지막 obs를 반환하므로 여기서 중복 env.step() 하지 않음
+            loss, obs, done, info = compute_grpo_loss(
                 actor, image, instruction, env
             )
             episode_loss += loss.item()
+            step_count   += 1
 
             # Gradient accumulation
             (loss / GRAD_ACCUM).backward()
@@ -244,15 +311,19 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            # 다음 스텝
-            _, action_vector = actor.generate(image, instruction)
-            obs, _, done, info = env.step(action_vector)
-
             if done:
                 successes.append(info.get("success", False))
                 break
 
-        losses.append(episode_loss)
+        # 마지막 gradient 처리
+        if step_count % GRAD_ACCUM != 0:
+            torch.nn.utils.clip_grad_norm_(
+                actor.parameters(), max_norm=1.0
+            )
+            optimizer.step()
+            optimizer.zero_grad()
+
+        losses.append(episode_loss / max(step_count, 1))
 
         # 로그 출력
         if (episode + 1) % 10 == 0:
@@ -301,7 +372,7 @@ def main():
 
     actor = ActorModel()
 
-    # gradient checkpointing으로 VRAM 절약
+    # gradient checkpointing으로 VRAM 절약 (필수)
     actor.qwen.gradient_checkpointing_enable()
 
     all_stats = []
