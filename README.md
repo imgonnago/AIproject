@@ -76,14 +76,14 @@
 - **train**
   > main역할을 하는 파일임. GRPO와 LIBERO를 실행.
   > 보상함수를 설계 해야함.
-
+  
 ---
 
 **📁assets**
 
-  ＞openvla actoin embedding 파라미터를 다운받는 파일임.
-  ＞모델 실행하기 전 꼭 한번 실행시켜야함.
-  ＞openvla_action_embeddings.pt 파일을 생성함.
+- **make_embeddings.py**
+  > openvla action embedding 파라미터를 다운받는 파일.
+  > 모델 실행시키기 전에 무조건 한 번 실행시켜야함.
 
 ---
 
