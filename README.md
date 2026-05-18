@@ -1,7 +1,8 @@
 **AIproject**🚀
 ---
 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발
-[GitHub Stats](https://github-readme-stats.vercel.app/api?username=내아이디&show_icons=true&theme=radical)
+
+[GitHub Stats](https://github.com/imgonnago/AIproject.git)
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
 
