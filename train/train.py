@@ -97,98 +97,59 @@ def reward_fn(info: dict, done: bool) -> float:
 # GRPO 핵심 로직
 # ─────────────────────────────────────────
 
-def compute_grpo_loss(
-    actor: ActorModel,
-    image: Image.Image,
-    instruction: str,
-    env,
-    group_size: int = GROUP_SIZE
-) -> tuple:
-    """
-    단일 상태에서 GRPO loss 계산.
+def compute_grpo_loss(actor, image, instruction, env, group_size=GROUP_SIZE):
 
-    GRPO 동작 방식:
-        1. 같은 이미지 + 텍스트로 group_size개 action 샘플링
-        2. 각 action을 LIBERO 환경에서 실행해서 reward 수집
-        3. Group 내 상대적 advantage 계산
-           advantage = (reward - mean) / std
-        4. log_prob * advantage로 policy gradient loss 계산
-
-    수정 사항:
-        - group sampling 중 env.reset() 제거
-          → 같은 상태에서 모든 샘플을 실행해야 GRPO가 유효함
-          → 대신 env.set_state()로 초기 상태 저장/복원
-        - obs 반환 추가
-          → 학습 루프에서 중복 env.step() 방지
-
-    :param actor: ActorModel
-    :param image: 현재 환경 이미지
-    :param instruction: 태스크 명령
-    :param env: LIBERO 환경
-    :param group_size: 샘플링할 action 수
-    :return: (loss, obs, done, info) 튜플
-        - loss: GRPO loss (scalar tensor)
-        - obs: 마지막 샘플의 환경 관찰값
-        - done: 마지막 샘플의 에피소드 종료 여부
-        - info: 마지막 샘플의 환경 info
-    """
     rewards   = []
     log_probs = []
     last_obs  = None
     last_done = False
     last_info = {}
 
-    # 현재 환경 상태 저장 (같은 상태에서 group sampling)
     try:
         init_state = env.get_state()
         use_state_restore = True
-    except AttributeError:
-        # get_state() 지원 안 하면 상태 복원 없이 진행
+    except:
         use_state_restore = False
 
-    # group_size개 action 샘플링 + reward 수집
     for g in range(group_size):
-
-        # 같은 초기 상태에서 시작 (첫 번째 샘플 제외)
         if g > 0 and use_state_restore:
             env.set_state(init_state)
 
-        # Actor forward → logits
+        # forward → logits 계산
         logits = actor.forward(image, instruction)
 
-        # action token 샘플링 (temperature sampling)
-        action_token_ids = torch.multinomial(
-            torch.softmax(logits[0, -7:, :], dim=-1),
-            num_samples=1
-        ).squeeze(-1)  # (7,)
+        # action token 샘플링
+        with torch.no_grad():
+            action_token_ids = torch.multinomial(
+                torch.softmax(logits[0, -7:, :], dim=-1),
+                num_samples=1
+            ).squeeze(-1)
 
-        # log probability 계산
+        # log_prob 계산 (gradient 유지)
         log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
         token_log_prob = log_prob[
             torch.arange(7), action_token_ids
-        ].sum()  # scalar
+        ].sum()
         log_probs.append(token_log_prob)
 
-        # action vector 복원
-        action_vector = actor.action_tokenizer.decode_token_ids_to_actions(
-            action_token_ids.cpu().numpy()
-        )
+        # logits 즉시 삭제 ← 핵심!
+        del logits
+        torch.cuda.empty_cache()
 
-        # LIBERO 환경 실행 → reward
-        obs, _, done, info = env.step(action_vector)
-        reward = reward_fn(info, done)
+        # action 실행 → reward
+        with torch.no_grad():
+            action_vector = actor.action_tokenizer.decode_token_ids_to_actions(
+                action_token_ids.cpu().numpy()
+            )
+
+        last_obs, _, last_done, last_info = env.step(action_vector)
+        reward = reward_fn(last_info, last_done)
         rewards.append(reward)
 
-        # 마지막 샘플 결과 저장 (학습 루프에서 사용)
-        last_obs  = obs
-        last_done = done
-        last_info = info
-
-    # advantage 계산 (Group 내 상대적 reward)
+    # advantage 계산
     rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
 
     if rewards_tensor.std() < 1e-8:
-        # 모든 reward가 같으면 advantage = 0 (업데이트 없음)
         advantages = torch.zeros_like(rewards_tensor)
     else:
         advantages = (
@@ -196,7 +157,7 @@ def compute_grpo_loss(
             / (rewards_tensor.std() + 1e-8)
         )
 
-    # GRPO loss 계산
+    # GRPO loss
     log_probs_tensor = torch.stack(log_probs)
     loss = -(log_probs_tensor * advantages.to(log_probs_tensor.device)).mean()
 
