@@ -1,15 +1,15 @@
 <h1>AIproject : 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발</h1> 
 
 
-<a href="https://pytorch.org/get-started/locally/"style="text-decoration: none;">
+<a href="https://pytorch.org/get-started/locally/">
   <img src="https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
 </a>
 &nbsp;
-<a href="https://pytorch.org/get-started/locally/"style="text-decoration: none;">
+<a href="https://pytorch.org/get-started/locally/">
   <img src="https://img.shields.io/badge/PYTORCH-openvla%202.12.0%20%2Bcpu%20-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
 </a>
 &nbsp;
-<a href="https://www.python.org/"style="text-decoration: none;">
+<a href="https://www.python.org/">
   <img src="https://img.shields.io/badge/Python-3.10-brightgreen?style=flat-square&label=Python&labelColor=%23eeeeee&color=%2355adf4"height="40"/>
 </a>
 
@@ -98,3 +98,31 @@ torch version (openvla)
 
 `pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu \
     --index-url https://download.pytorch.org/whl/cpu`
+
+**모델 실행**
+---
+모델을 실행하기 전 openvla_embeddings 파일이 필요함.
+
+openvla 환경에 진입해서 
+
+`python make_embeddings.py`
+
+로 embedding파일 생성.
+
+---
+
+planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함.
+
+터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
+
+`conda actiavte openvla`
+
+`conda activate qwen`
+
+---
+
+각 터미널에서 파일 실행.
+
+`python openvla_planner/openvla_inference_code.py`
+
+`python train/train.py`
