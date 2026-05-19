@@ -116,6 +116,7 @@ planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함
 터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
 
 `conda actiavte openvla`
+
 `conda activate qwen`
 
 ---
@@ -123,4 +124,5 @@ planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함
 각 터미널에서 파일 실행.
 
 `python openvla_planner/openvla_inference_code.py`
+
 `python train/train.py`
