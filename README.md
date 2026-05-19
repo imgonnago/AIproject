@@ -1,14 +1,15 @@
 <h1>AIproject : 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발</h1> 
 
-<a href="https://pytorch.org/get-started/locally/">
+
+<a href="https://pytorch.org/get-started/locally/"style="text-decoration: none;">
   <img src="https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
 </a>
 &nbsp;
-<a href="https://pytorch.org/get-started/locally/">
+<a href="https://pytorch.org/get-started/locally/"style="text-decoration: none;">
   <img src="https://img.shields.io/badge/PYTORCH-openvla%202.12.0%20%2Bcpu%20-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
 </a>
 &nbsp;
-<a href="https://www.python.org/">
+<a href="https://www.python.org/"style="text-decoration: none;">
   <img src="https://img.shields.io/badge/Python-3.10-brightgreen?style=flat-square&label=Python&labelColor=%23eeeeee&color=%2355adf4"height="40"/>
 </a>
 
