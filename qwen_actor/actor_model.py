@@ -46,6 +46,7 @@ OPENVLA_DIM        = 4096
 QWEN_DIM           = 2048
 PLANNER_HOST       = "localhost"
 PLANNER_PORT       = 5555
+OPENVLA_VOCAB_SIZE = 32000
 
 
 # ─────────────────────────────────────────
@@ -56,27 +57,43 @@ class ActorModel(nn.Module):
     """
     비판적 재평가 듀얼 시스템의 Actor 모델.
 
-    __init__ 구성:
-        1. Qwen2.5-VL 4bit 양자화 로드
-        2. Projection Layer 초기화 (LLaVA 기반, 4096 → 2048)
-        3. ActorActionTokenizer 초기화 + setup()
-        4. LoRA 적용 (q_proj, k_proj, v_proj, o_proj)
-        5. ZeroMQ 클라이언트 연결
+    __init__ 순서 (순서 중요!):
+        1. Processor 로드
+        2. Action token 256개 tokenizer에 추가  ← 모델 로드 전에 먼저!
+        3. Qwen 4bit 양자화 로드
+        4. 임베딩 테이블 resize
+        5. Projection Layer 초기화
+        6. ActorActionTokenizer 초기화 + init_action_embeddings()
+        7. LoRA 적용
+        8. ZeroMQ 클라이언트 연결
 
-    generate() 흐름:
-        이미지 + 텍스트
-        → ZeroMQ → Planner action token 수신
-        → Qwen Processor → text/image 임베딩
-        → ActorActionTokenizer.forward() → action 임베딩 + concat
-        → Qwen LLM + LoRA → critique 텍스트 + action token
-        → decode_token_ids_to_actions() → action vector
-        → 로봇 실행
+    핵심: action token을 모델 로드 전에 tokenizer에 추가해야
+          resize_token_embeddings()가 정상 작동함
+          (4bit 양자화 모델은 로드 후 resize가 제한됨)
     """
 
     def __init__(self):
         super(ActorModel, self).__init__()
 
-        # ── 1. Qwen2.5-VL 4bit 양자화 로드 ──────────
+        # ── 1. Processor 로드 ────────────────────────
+        print("Processor 로드 중...")
+        self.processor = AutoProcessor.from_pretrained(
+            QWEN_MODEL_PATH,
+            min_pixels=256 * 28 * 28,
+            max_pixels=512 * 28 * 28
+        )
+
+        # ── 2. Action token 256개 tokenizer에 추가 ───
+        # 반드시 모델 로드 전에 추가해야 resize가 정상 작동함
+        print(f"tokenizer 원래 크기: {len(self.processor.tokenizer)}")
+        action_tokens = [f"<action_{i}>" for i in range(256)]
+        num_added = self.processor.tokenizer.add_special_tokens(
+            {"additional_special_tokens": action_tokens}
+        )
+        print(f"추가된 token 수: {num_added}")
+        print(f"tokenizer 새 크기: {len(self.processor.tokenizer)}")
+
+        # ── 3. Qwen2.5-VL 4bit 양자화 로드 ──────────
         print("Qwen2.5-VL 3B loading... (4bit quantization)")
 
         bnb_config = BitsAndBytesConfig(
@@ -86,33 +103,35 @@ class ActorModel(nn.Module):
             bnb_4bit_use_double_quant=True
         )
 
-        self.processor = AutoProcessor.from_pretrained(
-            QWEN_MODEL_PATH,
-            min_pixels=256 * 28 * 28,
-            max_pixels=512 * 28 * 28
-        )
-
         self.qwen = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             QWEN_MODEL_PATH,
             quantization_config=bnb_config,
             device_map="cuda"
         )
-        print("Qwen load compliete!")
+        print("Qwen load complete!")
 
-        # ── 2. Projection Layer 초기화 ───────────────
+        # ── 4. 임베딩 테이블 resize ──────────────────
+        new_vocab_size = len(self.processor.tokenizer)
+        self.qwen.resize_token_embeddings(new_vocab_size)
+        print(f"임베딩 테이블 크기: {self.qwen.get_input_embeddings().weight.shape}")
+
+        # ── 5. Projection Layer 초기화 ───────────────
         self.projection = Projection(OPENVLA_DIM, QWEN_DIM).to("cuda")
 
-        # ── 3. ActorActionTokenizer 초기화 + setup ───
+        # ── 6. ActorActionTokenizer 초기화 ───────────
+        # add_tokenizer_vocab, resize_embeddings는 위에서 이미 처리했으므로
+        # init_action_embeddings만 호출 (setup() 대신)
         self.action_tokenizer = ActorActionTokenizer(
             processor=self.processor,
             qwen_model=self.qwen,
             projection=self.projection
         )
-        openvla_embed_weights = torch.load(OPENVLA_EMBED_PATH)
-        self.action_tokenizer.setup(openvla_embed_weights)
 
-        # ── 4. LoRA 적용 ─────────────────────────────
-        # 4bit 양자화 모델에 LoRA 적용 전 필수
+        openvla_embed_weights = torch.load(OPENVLA_EMBED_PATH)
+        self.action_tokenizer.init_action_embeddings(openvla_embed_weights)
+        print("ActorActionTokenizer 초기화 완료!")
+
+        # ── 7. LoRA 적용 ─────────────────────────────
         self.qwen = prepare_model_for_kbit_training(self.qwen)
 
         lora_config = LoraConfig(
@@ -125,13 +144,13 @@ class ActorModel(nn.Module):
         self.qwen = get_peft_model(self.qwen, lora_config)
         self.qwen.print_trainable_parameters()
 
-        # ── 5. ZeroMQ 클라이언트 연결 ────────────────
+        # ── 8. ZeroMQ 클라이언트 연결 ────────────────
         zmq_context = zmq.Context()
         self.planner_socket = zmq_context.socket(zmq.REQ)
         self.planner_socket.connect(f"tcp://{PLANNER_HOST}:{PLANNER_PORT}")
         print(f"Planner server connected: {PLANNER_HOST}:{PLANNER_PORT}")
 
-        print("ActorModel initializatoin complete!")
+        print("ActorModel initialization complete!")
 
 
     # ─────────────────────────────────────────
@@ -146,10 +165,6 @@ class ActorModel(nn.Module):
         """
         ZeroMQ로 Planner 서버에 이미지 + 텍스트 전송,
         action token ID 7개 수신.
-
-        :param image: PIL Image
-        :param instruction: 태스크 명령 텍스트
-        :return: shape (7,), dtype int
         """
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -180,11 +195,6 @@ class ActorModel(nn.Module):
         """
         Qwen Processor 입력 구성.
         시스템 프롬프트 + 태스크 명령 + Planner action 정보 통합.
-
-        :param image: PIL Image
-        :param instruction: 태스크 명령 텍스트
-        :param planner_action_token_ids: shape (7,)
-        :return: Qwen Processor 출력 dict
         """
         action_str = " ".join(
             [f"<action_{i}>" for i in planner_action_token_ids]
@@ -244,21 +254,14 @@ class ActorModel(nn.Module):
         image: Image.Image,
         instruction: str
     ) -> torch.Tensor:
-        """
-        GRPO 학습 루프에서 호출.
+        """GRPO 학습 루프에서 호출."""
 
-        :param image: PIL Image
-        :param instruction: 태스크 명령 텍스트
-        :return: logits shape (batch, seq_len, vocab_size)
-        """
         # 1. ZeroMQ → Planner action token 수신
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
 
         # 2. Qwen Processor → text/image 임베딩
         inputs = self.build_prompt(image, instruction, planner_action_tokens)
-        text_image_embeds = self.qwen.model.embed_tokens(
-            inputs["input_ids"]
-        )  # (batch, seq_len, 2048)
+        text_image_embeds = self.qwen.base_model.model.model.language_model.embed_tokens(inputs["input_ids"])
 
         # 3. ActorActionTokenizer.forward() → action 임베딩 + concat
         action_token_tensor = torch.tensor(
@@ -298,21 +301,14 @@ class ActorModel(nn.Module):
         instruction: str,
         max_new_tokens: int = 100
     ) -> tuple:
-        """
-        critique 텍스트 + 수정된 action vector 생성.
-        LIBERO 환경에서 매 스텝 호출.
+        """critique 텍스트 + 수정된 action vector 생성."""
 
-        :param image: PIL Image
-        :param instruction: 태스크 명령 텍스트
-        :param max_new_tokens: 최대 생성 token 수
-        :return: (critique: str, action_vector: np.ndarray shape (7,))
-        """
         # 1. ZeroMQ → Planner action token 수신
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
 
         # 2. 입력 구성 + 임베딩
         inputs = self.build_prompt(image, instruction, planner_action_tokens)
-        text_image_embeds = self.qwen.model.embed_tokens(inputs["input_ids"])
+        text_image_embeds = self.qwen.base_model.model.model.language_model.embed_tokens(inputs["input_ids"])
 
         # 3. action 임베딩 + concat
         action_token_tensor = torch.tensor(
@@ -365,18 +361,14 @@ class ActorModel(nn.Module):
             return ""
 
     def _parse_and_decode_action(self, output_text: str) -> np.ndarray:
-        """
-        [ACTION] ~ [/ACTION] 사이 action token 추출
-        → decode_token_ids_to_actions() → action vector 복원.
-        """
+        """[ACTION] ~ [/ACTION] 사이 action token → action vector 복원."""
         try:
             start = output_text.index("[ACTION]") + len("[ACTION]")
             end   = output_text.index("[/ACTION]")
             action_str = output_text[start:end].strip()
 
-            # <action_N> 에서 N 추출 → token ID로 변환
-            indices  = re.findall(r"<action_(\d+)>", action_str)
-            indices  = np.array([int(i) for i in indices[:7]])
+            indices   = re.findall(r"<action_(\d+)>", action_str)
+            indices   = np.array([int(i) for i in indices[:7]])
             token_ids = OPENVLA_VOCAB_SIZE - indices
 
             return self.action_tokenizer.decode_token_ids_to_actions(token_ids)
@@ -413,6 +405,6 @@ if __name__ == "__main__":
 
     print(f"[Critique]: {critique}")
     print(f"[Action vector]: {action_vector}")
-    print(f"[Shape]: {action_vector.shape}")  # (7,)
+    print(f"[Shape]: {action_vector.shape}")
 
     actor.close()

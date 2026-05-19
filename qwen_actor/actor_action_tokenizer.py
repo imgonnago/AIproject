@@ -36,7 +36,12 @@ class ActorActionTokenizer:
         action_tokens = [f"<action_{i}>" for i in range(n_bins)]
         self.processor.tokenizer.add_special_tokens(
         {"additional_special_tokens": action_tokens}
-        )   
+        )
+        print(len(self.processor.tokenizer))
+        # 현재 special tokens 확인
+        print(self.processor.tokenizer.special_tokens_map)
+        print(len(self.processor.tokenizer))
+          
         return self.processor.tokenizer
         
             
@@ -46,24 +51,18 @@ class ActorActionTokenizer:
         새로 추가된 256개 토큰의 임베딩은 OpenVLA에서 추출한 임베딩으로 초기화될 예정.
         """
         self.qwen_model.resize_token_embeddings(len(self.processor.tokenizer))
+        print(len(self.qwen_model.get_input_embeddings().weight))
         return self.qwen_model
         
     def init_action_embeddings(self, openvla_embed_weights: torch.Tensor):
-        """
-        새로 추가된 action token 256개를 OpenVLA 임베딩으로 초기화.
-        랜덤 초기화 대신 의미 있는 초기값으로 학습 수렴 속도 향상.
-        :param openvla_embed_weights: shape (256, 4096), OpenVLA에서 추출한 임베딩
-        """
-        with torch.no_grad():
-            # Projection Layer로 4096 → 2048 변환
-            init_weights = self.projection(
-                openvla_embed_weights.to("cuda").float()
-            )  # (256, 2048)
+        if openvla_embed_weights.shape[0] != 256:
+            openvla_embed_weights = openvla_embed_weights[-256:]
 
-            # 새로 추가된 마지막 256개 행만 교체
-            self.qwen_model.get_input_embeddings().weight[-256:] = (
-                init_weights.to(torch.bfloat16)
-            )
+        # 임베딩 레이어 경로 찾기
+        for name, module in self.qwen_model.named_modules():
+            if 'embed' in name.lower():
+                print(name, type(module))
+
     
     def embed_action_tokens(self, action_token_ids):
         """
@@ -76,7 +75,7 @@ class ActorActionTokenizer:
         이를 qwen 모델의 텍스트/이미지 임베딩과 concat해서 모델 입력으로 사용할 예정임.
         """
         # 1. Token IDs → OpenVLA 임베딩
-        bin_indices = OPENVLA_VOCAB_SIZE - action_token_ids  # 0~255
+        bin_indices = self.OPENVLA_VOCAB_SIZE - action_token_ids  # 0~255
         openvla_embeds = self.openvla_embedding(
             torch.tensor(bin_indices, dtype=torch.long).to("cuda")
         )  # (7, 4096)
@@ -84,7 +83,8 @@ class ActorActionTokenizer:
         # 2. Projection Layer로 4096 → 2048 변환
         qwen_embeds = self.projection(openvla_embeds.float())  # (7, 2048)
 
-        return qwen_embeds.to(torch.bfloat16)
+        return qwen_embeds.unsqueeze(0).to(torch.bfloat16)    # (1, 7, 2048) ← 추가
+
     
     # 마지막 qwen 모델에서 생성된 action token ID 7개를 action vector 값 7개로 변환하는 함수.
     def decode_token_ids_to_actions(self, action_token_ids: np.ndarray) -> np.ndarray:
@@ -100,7 +100,7 @@ class ActorActionTokenizer:
         같은 임베딩 레이어를 공유하기 때문임. 
         따라서 action token ID → bin index → action value로 변환하는 과정은 openvla의 detokenizer 코드와 동일하게 적용할 수 있음.
         """
-        discretized_actions = OPENVLA_VOCAB_SIZE - action_token_ids 
+        discretized_actions = self.OPENVLA_VOCAB_SIZE - action_token_ids 
         discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
 
         return self.bin_centers[discretized_actions]
