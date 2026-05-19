@@ -28,12 +28,12 @@ from qwen_actor.actor_model import ActorModel
 
 TASK_SUITE    = "libero_10"   # LIBERO-Long (libero_10)
 TASK_IDS      = [0, 1, 2]      # 학습할 태스크 3개 (0~9 중 선택)
-NUM_EPISODES  = 500             # 태스크당 학습 에피소드 수
+NUM_EPISODES  = 300             # 태스크당 학습 에피소드 수
 MAX_STEPS     = 300             # 에피소드당 최대 스텝 수
 IMG_HEIGHT    = 224             # 이미지 높이
 IMG_WIDTH     = 224             # 이미지 너비
 SAVE_PATH     = "checkpoints"   # 체크포인트 저장 경로
-GROUP_SIZE    = 4               # GRPO group sampling 수 (메모리 제한으로 2~4 권장)
+GROUP_SIZE    = 2               # GRPO group sampling 수 (메모리 제한으로 2~4 권장)
 LEARNING_RATE = 1e-4
 GRAD_ACCUM    = 4               # gradient accumulation steps
 

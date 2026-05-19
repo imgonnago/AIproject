@@ -106,7 +106,8 @@ class ActorModel(nn.Module):
         self.qwen = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             QWEN_MODEL_PATH,
             quantization_config=bnb_config,
-            device_map="cuda"
+            device_map="cuda",
+            attn_implementation="sdpa"
         )
         print("Qwen load complete!")
 
@@ -299,7 +300,7 @@ class ActorModel(nn.Module):
         self,
         image: Image.Image,
         instruction: str,
-        max_new_tokens: int = 100
+        max_new_tokens: int = 50
     ) -> tuple:
         """critique 텍스트 + 수정된 action vector 생성."""
 
