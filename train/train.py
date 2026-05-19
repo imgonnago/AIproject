@@ -29,14 +29,12 @@ from qwen_actor.actor_model import ActorModel
 TASK_SUITE    = "libero_10"   # LIBERO-Long (libero_10)
 TASK_IDS      = [0, 1, 2]      # 학습할 태스크 3개 (0~9 중 선택)
 NUM_EPISODES  = 300             # 태스크당 학습 에피소드 수
-MAX_STEPS     = 300             # 에피소드당 최대 스텝 수
+MAX_STEPS     = 50             # 에피소드당 최대 스텝 수
 IMG_HEIGHT    = 224             # 이미지 높이
 IMG_WIDTH     = 224             # 이미지 너비
 SAVE_PATH     = "checkpoints"   # 체크포인트 저장 경로
 GROUP_SIZE    = 2               # GRPO group sampling 수 (메모리 제한으로 2~4 권장)
 LEARNING_RATE = 1e-4
-GRAD_ACCUM    = 4               # gradient accumulation steps
-
 
 # ─────────────────────────────────────────
 # LIBERO 환경 초기화
@@ -249,10 +247,11 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
         obs          = env.reset()
         episode_loss = 0.0
         step_count   = 0
-        optimizer.zero_grad()
 
         for step in range(MAX_STEPS):
             image = get_image_from_obs(obs)
+
+            optimizer.zero_grad()#매 스텝마다 optimizer.zero_grad() 호출하여 이전 스텝의 그래디언트 누적 방지
 
             # GRPO loss 계산
             # compute_grpo_loss가 env.step()을 내부에서 실행하고
@@ -263,27 +262,15 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
             episode_loss += loss.item()
             step_count   += 1
 
-            # Gradient accumulation
-            (loss / GRAD_ACCUM).backward()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
+            optimizer.step()
 
-            if (step + 1) % GRAD_ACCUM == 0:
-                torch.nn.utils.clip_grad_norm_(
-                    actor.parameters(), max_norm=1.0
-                )
-                optimizer.step()
-                optimizer.zero_grad()
+            torch.cuda.empty_cache()
 
             if done:
                 successes.append(info.get("success", False))
                 break
-
-        # 마지막 gradient 처리
-        if step_count % GRAD_ACCUM != 0:
-            torch.nn.utils.clip_grad_norm_(
-                actor.parameters(), max_norm=1.0
-            )
-            optimizer.step()
-            optimizer.zero_grad()
 
         losses.append(episode_loss / max(step_count, 1))
 
@@ -297,6 +284,17 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
                 f"loss: {recent_loss:.4f} | "
                 f"성공률: {recent_success:.1f}%"
             )
+        
+        with torch.no_grad():
+            sample_image = get_image_from_obs(env.reset())
+            critique, action_vector = actor.generate(
+                image=sample_image,
+                instruction=instruction
+            )
+            print(f"\n[에피소드 {episode+1} 출력]")
+            print(f"  critique:      {critique if critique else '(없음)'}")
+            print(f"  action_vector: {action_vector}")
+
 
         # 체크포인트 저장
         if (episode + 1) % 100 == 0:
