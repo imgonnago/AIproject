@@ -125,6 +125,6 @@ planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함
 
 `python openvla_planner/openvla_inference_code.py`
 
-> 파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ가 실행되고 qwen을 실행해야함.
+> 파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
 
 `python train/train.py`
