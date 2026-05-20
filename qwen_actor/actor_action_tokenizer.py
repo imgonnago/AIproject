@@ -35,64 +35,6 @@ class ActorActionTokenizer:
         이 토큰 ID들은 모델의 임베딩 레이어에서 OpenVLA 임베딩으로 초기화될 예정.
         """
         action_tokens = [f"<action_{i}>" for i in range(n_bins)]
-        self.processor.tokenizer.add_special_tokens(
-        {"additional_special_tokens": action_tokens}
-        )
-        print(len(self.processor.tokenizer))
-        # 현재 special tokens 확인
-        print(self.processor.tokenizer.special_tokens_map)
-        print(len(self.processor.tokenizer))
-          
-        return self.processor.tokenizer
-        
-            
-    def resize_embeddings(self):
-        """
-        qwen 모델의 임베딩 레이어 크기를 tokenizer vocab 크기에 맞게 조정.
-        새로 추가된 256개 토큰의 임베딩은 OpenVLA에서 추출한 임베딩으로 초기화될 예정.
-        """
-        self.qwen_model.resize_token_embeddings(len(self.processor.tokenizer))
-        print(len(self.qwen_model.get_input_embeddings().weight))
-        print(f"임베딩 테이블 크기: {self.qwen.get_input_embeddings().weight.shape}")
-        return self.qwen_model
-        
-    import numpy as np
-import torch
-import torch.nn as nn
-from projection_layer import Projection
-
-#openvla LLM vocab size
-
-class ActorActionTokenizer:
-    def __init__(self, processor, qwen_model, projection, OPENVLA_VOCAB_SIZE = 32000):
-        self.bins = np.linspace(-1, 1, 256) # 256 bins between -1 and 1
-        self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2.0 # bin centers for decoding
-        self.min_action = -1 # action 값의 최소값 (클리핑, bin 간격의 하한 설정)
-        self.max_action = 1 # action 값의 최대값 (클리핑, bin 간격의 상한 설정)
-        self.processor = processor #qwen 모델의 processor (tokenizer + feature extractor)
-        self.qwen_model = qwen_model # Qwen 모델 (action token 임베딩 레이어 resize 필요)
-        self.projection = projection # OpenVLA 임베딩 → Qwen 모델 입력 임베딩으로 변환하는 Projection Layer (LayerNorm + MLP)
-        self.OPENVLA_VOCAB_SIZE = OPENVLA_VOCAB_SIZE
-
-        # OpenVLA에서 추출한 action token 임베딩으로 초기화된 임베딩 레이어 (새로 추가된 256개 토큰)
-        action_embed_weights = torch.load(
-        "assets/openvla_action_embeddings.pt",
-        weights_only=False
-        )  
-        # shape (256, 4096)
-        self.openvla_embedding = nn.Embedding.from_pretrained(
-        action_embed_weights,
-        freeze=True  # 학습 안됨
-        ).to("cuda")
-
-
-    def add_tokenizer_vocab(self, n_bins: int = 256):
-        """
-        qwen 모델의 tokenizer vocab에 action token 256개 추가.
-        여기선 실제 토큰이 들어있는건 아니고, 단지 토크나이저가 인식할 수 있는 새로운 토큰 ID 256개를 추가하는 것임.
-        이 토큰 ID들은 모델의 임베딩 레이어에서 OpenVLA 임베딩으로 초기화될 예정.
-        """
-        action_tokens = [f"<action_{i}>" for i in range(n_bins)]
         num_added = self.processor.tokenizer.add_special_tokens(
         {"additional_special_tokens": action_tokens}
         )
