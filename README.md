@@ -94,6 +94,8 @@
   > openvla와 smolvlm의 토크나이저 임베딩 공간을 맞춰줌. 
   > LLaVA의 prijection layer를 참고함.
 
+---
+
 **📁train_file**
 
 - **train**
@@ -119,11 +121,13 @@ PYTORCH VERSION (나머지는 requirements file 참고)
 ---
 torch version (qwen)
 
-```pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124```
+`pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124`
 
 torch version (openvla)
 
-```pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu --index-url https://download.pytorch.org/whl/cpu```
+`pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu --index-url https://download.pytorch.org/whl/cpu`
+
+SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방함. 
 
 **모델 실행**
 ---
@@ -131,48 +135,26 @@ torch version (openvla)
 
 openvla 환경에 진입해서 
 
-```python make_embeddings.py```
+`python make_embeddings.py`
 
 로 embedding파일 생성.
 
----
+
 
 planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함.
 
 터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
 
-```conda actiavte openvla```
+`conda actiavte openvla`
 
-```conda activate qwen```
+`conda activate qwen`
 
----
+
 
 각 터미널에서 파일 실행.
 
-```python openvla_planner/openvla_inference_code.py```
+`python openvla_planner/openvla_inference_code.py`
 
 > 파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
 
 ```python train/train.py```
-
-**기타 설정**
----
-모델 실행시 vram 사용량과 train log를 기록할 수 있는 코드.
-
-- vram_log
-
-`nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &`
-
-- train_log
-
-`python train/train.py >> train_log.txt 2>&1  or  python train/smol_train.py >> train_log.txt 2>&1`
-
-터미널에 입력하면 nvidia 프로세서 정보와 vram 사용량 gpu사용량을 볼 수 있는 코드.
-
-숫자를 바꾸면 해당 초 마다 사용량을 볼 수 있음.
-
-`watch -n 0.5 nvidia-smi`
-
-GPU가 어떤 프로세스를 사용하는지 확인할 수 있는 코드.
-
-`nvidia-smi pmon -c 1`
