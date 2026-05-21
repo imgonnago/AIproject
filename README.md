@@ -94,6 +94,8 @@
   > openvla와 smolvlm의 토크나이저 임베딩 공간을 맞춰줌. 
   > LLaVA의 prijection layer를 참고함.
 
+---
+
 **📁train_file**
 
 - **train**
@@ -137,7 +139,7 @@ openvla 환경에 진입해서
 
 로 embedding파일 생성.
 
----
+
 
 planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함.
 
@@ -147,7 +149,7 @@ planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함
 
 `conda activate qwen`
 
----
+
 
 각 터미널에서 파일 실행.
 
