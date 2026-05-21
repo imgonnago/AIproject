@@ -123,8 +123,7 @@ torch version (qwen)
 
 torch version (openvla)
 
-```pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu \
-    --index-url https://download.pytorch.org/whl/cpu```
+```pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu --index-url https://download.pytorch.org/whl/cpu```
 
 **모델 실행**
 ---
