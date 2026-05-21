@@ -33,7 +33,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
 NUM_EPISODES    = 300
-MAX_STEPS       = 20              # VRAM 절약을 위해 줄임
+MAX_STEPS       = 10              # VRAM 절약을 위해 줄임
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
@@ -460,7 +460,7 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
         # ── 체크포인트 저장 ───────────────────────────
         if (episode + 1) % 100 == 0:
             save_dir = f"{SAVE_PATH}/task_{task_id}_ep_{episode+1}"
-            actor.qwen.save_pretrained(save_dir)
+            actor.smol.save_pretrained(save_dir)
             print(f"체크포인트 저장: {save_dir}")
 
     env.close()
@@ -492,7 +492,7 @@ def main():
     print("Planner 서버(openvla_inference_code.py)가 실행 중이어야 합니다.")
 
     actor = ActorModel()
-    actor.qwen.gradient_checkpointing_enable()
+    actor.smol.gradient_checkpointing_enable()
 
     all_stats = []
 
@@ -509,7 +509,7 @@ def main():
             f"성공률 {stats['success_rate']:.1f}%"
         )
 
-    actor.qwen.save_pretrained(f"{SAVE_PATH}/final")
+    actor.smol.save_pretrained(f"{SAVE_PATH}/final")
     print(f"최종 모델 저장: {SAVE_PATH}/final")
 
     actor.close()

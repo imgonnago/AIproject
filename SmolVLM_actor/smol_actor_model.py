@@ -17,6 +17,7 @@ Actor Model (SmolVLM2-500M 버전)
     actor_action_tokenizer.py
 """
 import os
+import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import io
 import re
@@ -130,10 +131,10 @@ class ActorModel(nn.Module):
 
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
-            r=16,
-            lora_alpha=32,
+            r=8,
+            lora_alpha=16,
             lora_dropout=0.05,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"]
+            target_modules=["q_proj", "k_proj", "v_proj"]
         )
         self.smol = get_peft_model(self.smol, lora_config)
         self.smol.print_trainable_parameters()
