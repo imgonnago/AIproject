@@ -81,9 +81,6 @@ termcolor==3.3.0
 timm==0.9.10
 tokenizers==0.19.1
 toml==0.10.2
-torch==2.12.0+cpu
-torchaudio==2.11.0+cpu
-torchvision==0.27.0+cpu
 tqdm==4.67.3
 transformers==4.40.1
 typeguard==4.5.1
