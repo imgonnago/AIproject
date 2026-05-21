@@ -270,6 +270,10 @@ def collect_rollout(
                     action_token_ids.cpu().numpy()
                 )
 
+                token_ids_for_text = torch.argmax(logits[0], dim=-1)
+                output_text = actor.processor.decode(token_ids_for_text, skip_special_tokens=True)
+                step_critique = actor._parse_critique(output_text)
+
                 # logits 즉시 삭제로 VRAM 해제
                 del logits
                 torch.cuda.empty_cache()
@@ -279,6 +283,12 @@ def collect_rollout(
 
             # 다중 보상 함수로 reward 계산
             reward = reward_fn(action_vector, obs, info, done)
+
+            print(f"  [Group {g+1}/{group_size} | Step {step+1}]")
+            print(f"    - Critique: {step_critique if step_critique else '(생성 중/분석 불가)'}")
+            print(f"    - Action  : {np.round(action_vector, 3)}")
+            print(f"    - Reward  : {reward:.4f} | Done: {done}")
+            print(f"  " + "─"*30)
 
             # trajectory에 스텝 데이터 저장
             # action_token_ids는 학습 단계에서 log_prob 재계산에 사용
