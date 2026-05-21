@@ -145,19 +145,26 @@ planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함
 
 터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
 
-`conda actiavte openvla`
+```
+conda actiavte openvla
 
-`conda activate qwen`
-
+conda activate qwen
+```
 
 
 각 터미널에서 파일 실행.
 
-`python openvla_planner/openvla_inference_code.py`
+```
+python openvla_planner/openvla_inference_code.py
 
-> 파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
+#파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
 
-`python train/train.py`
+python train/train.py
+
+#SmolVLM 모델 실행시
+
+python train/smol_train.pt
+```
 
 **기타 설정**
 ---
