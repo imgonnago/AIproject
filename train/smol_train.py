@@ -15,7 +15,7 @@ GRPO 학습 스크립트 (RLinf 방식 + LR 스케줄러 + 풍부한 보상함�
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "../qwen_actor"))
-
+sys.path.append(os.path.join(os.path.dirname(__file__), "../SmolVLM_actor"))
 import torch
 import numpy as np
 from PIL import Image

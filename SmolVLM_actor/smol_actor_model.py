@@ -16,7 +16,8 @@ Actor Model (SmolVLM2-500M 버전)
     projection_layer.py
     actor_action_tokenizer.py
 """
-
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import io
 import re
 import zmq
