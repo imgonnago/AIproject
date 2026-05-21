@@ -5,7 +5,7 @@ import torch.nn as nn
 
 
 class Projection(nn.Module):
-    def __init__(self, openvla_dim = 4096, qwen_dim = 1536):
+    def __init__(self, openvla_dim = 4096, qwen_dim = 2048):
         super(Projection, self).__init__()
         """ 
         LayerNorm + MLP Projection으로 OpenVLA 임베딩 → Qwen 모델 입력 임베딩으로 변환
