@@ -255,6 +255,7 @@ class ActorModel(nn.Module):
             tokenize=False,
             add_generation_prompt=True
         )
+        
         image_inputs, _ = process_vision_info(messages)
 
         inputs = self.processor(
