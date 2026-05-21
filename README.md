@@ -131,26 +131,17 @@ SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방�
 
 **모델 실행**
 ---
-모델을 실행하기 전 openvla_embeddings 파일이 필요함.
+- 모델을 실행하기 전 openvla_embeddings 파일이 필요함.openvla 환경에 진입해서 
 
-openvla 환경에 진입해서 
+`python make_embeddings.py` embedding파일 생성.
 
-`python make_embeddings.py`
-
-로 embedding파일 생성.
-
-
-
-planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함.
-
-터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
+- planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함. 터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
 
 ```
 conda actiavte openvla
 
 conda activate qwen
 ```
-
 
 각 터미널에서 파일 실행.
 
