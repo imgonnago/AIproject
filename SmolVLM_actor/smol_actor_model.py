@@ -36,8 +36,8 @@ from peft import (
     TaskType
 )
 
-from projection_layer import Projection
-from actor_action_tokenizer import ActorActionTokenizer
+from .smol_projection_layer import Projection
+from .smol_action_tokenizer import ActorActionTokenizer
 
 
 # ─────────────────────────────────────────
