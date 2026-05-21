@@ -169,12 +169,10 @@ python train/smol_train.pt
 
 `python train/train.py >> train_log.txt 2>&1  or  python train/smol_train.py >> train_log.txt 2>&1`
 
-터미널에 입력하면 nvidia 프로세서 정보와 vram 사용량 gpu사용량을 볼 수 있는 코드.
-
-숫자를 바꾸면 해당 초 마다 사용량을 볼 수 있음.
+-터미널에 입력하면 nvidia 프로세서 정보와 vram 사용량 gpu사용량을 볼 수 있는 코드. 숫자를 바꾸면 해당 초 마다 사용량을 볼 수 있음.
 
 `watch -n 0.5 nvidia-smi`
 
-GPU가 어떤 프로세스를 사용하는지 확인할 수 있는 코드.
+- GPU가 어떤 프로세스를 사용하는지 확인할 수 있는 코드.
 
 `nvidia-smi pmon -c 1`
