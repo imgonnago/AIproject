@@ -28,7 +28,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from libero.libero import benchmark
 from libero.libero.envs import OffScreenRenderEnv
-from smol_actor_model import ActorModel
+from SmolVLM_actor.smol_actor_model import ActorModel
 
 
 # ─────────────────────────────────────────
@@ -219,6 +219,9 @@ def collect_rollout(
                     image=image,
                     instruction=instruction
                 )
+
+            # OOM 방지: rollout 단계는 VRAM 절약이 중요 → 매 스텝마다 불필요한 텐서 해제 + 캐시 정리
+            torch.cuda.empty_cache()
 
             # 매 스텝 critique + action 출력
             print(f"  [스텝 {step+1}] critique:      {critique[:60] if critique else '(없음)'}")
