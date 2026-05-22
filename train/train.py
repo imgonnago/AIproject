@@ -42,7 +42,7 @@ MAX_STEPS       = 20
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
-GROUP_SIZE      = 1
+GROUP_SIZE      = 5
 
 # LR 스케줄러 설정
 LEARNING_RATE   = 1e-4

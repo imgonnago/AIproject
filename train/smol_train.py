@@ -38,11 +38,11 @@ from smol_actor_model import ActorModel
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
 NUM_EPISODES    = 300
-MAX_STEPS       = 10
+MAX_STEPS       = 20
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
-GROUP_SIZE      = 1
+GROUP_SIZE      = 5
 
 # LR 스케줄러 설정
 LEARNING_RATE   = 1e-4
