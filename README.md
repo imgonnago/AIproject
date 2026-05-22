@@ -150,26 +150,28 @@ python openvla_planner/openvla_inference_code.py
 
 #파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
 
-`python train/train.py`
+python train/train.py
 
 **기타 설정**
 ---
 모델 실행시 vram 사용량과 train log를 기록할 수 있는 코드.
 
-- vram_log
+#vram_log
 
-`nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &`
+nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &
 
-- train_log
+#train_log
 
-`python train/train.py >> train_log.txt 2>&1  or  python train/smol_train.py >> train_log.txt 2>&1`
+python train/train.py >> train_log.txt 2>&1  or  python train/smol_train.py >> train_log.txt 2>&1
 
+"""
 터미널에 입력하면 nvidia 프로세서 정보와 vram 사용량 gpu사용량을 볼 수 있는 코드.
 
 숫자를 바꾸면 해당 초 마다 사용량을 볼 수 있음.
+"""
 
-`watch -n 0.5 nvidia-smi`
+watch -n 0.5 nvidia-smi
 
-GPU가 어떤 프로세스를 사용하는지 확인할 수 있는 코드.
+#GPU가 어떤 프로세스를 사용하는지 확인할 수 있는 코드.
 
-`nvidia-smi pmon -c 1`
+nvidia-smi pmon -c 1
