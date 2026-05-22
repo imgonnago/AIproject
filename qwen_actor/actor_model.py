@@ -255,7 +255,6 @@ class ActorModel(nn.Module):
             tokenize=False,
             add_generation_prompt=True
         )
-        
         image_inputs, _ = process_vision_info(messages)
 
         inputs = self.processor(
@@ -274,23 +273,23 @@ class ActorModel(nn.Module):
     def forward(
         self,
         image: Image.Image,
-        instruction: str
+        instruction: str,
+        planner_action_tokens=None
     ) -> torch.Tensor:
         """
         GRPO 학습 루프에서 호출. logits 반환.
 
-        흐름:
-            ZeroMQ → Planner action token
-            → Qwen Processor → text/image 임베딩
-            → action_tokenizer.forward() → action 임베딩 + concat
-            → Qwen LLM + LoRA → logits
+        planner_action_tokens를 넘기면 OpenVLA 호출 생략.
+        rollout에서 저장한 값을 재사용해서 OpenVLA 중복 호출 방지.
 
         :param image: PIL Image
         :param instruction: 태스크 명령 텍스트
+        :param planner_action_tokens: rollout에서 저장한 Planner token (없으면 ZeroMQ 호출)
         :return: logits shape (batch, seq_len, vocab_size)
         """
-        # 1. Planner action token 수신
-        planner_action_tokens = self.get_planner_action_tokens(image, instruction)
+        # 1. Planner action token 수신 (없으면 ZeroMQ 호출, 있으면 재사용)
+        if planner_action_tokens is None:
+            planner_action_tokens = self.get_planner_action_tokens(image, instruction)
 
         # 2. text/image 임베딩 추출
         inputs = self.build_prompt(image, instruction, planner_action_tokens)
@@ -385,10 +384,11 @@ class ActorModel(nn.Module):
             skip_special_tokens=False
         )
 
-        critique      = self._parse_critique(output_text)
-        action_vector = self._parse_and_decode_action(output_text)
+        critique          = self._parse_critique(output_text)
+        action_vector, action_token_ids = self._parse_and_decode_action(output_text)
 
-        return critique, action_vector
+        # planner_action_tokens도 반환해서 학습 단계에서 재사용
+        return critique, action_vector, action_token_ids, planner_action_tokens
 
 
     # ─────────────────────────────────────────
@@ -404,32 +404,30 @@ class ActorModel(nn.Module):
         except ValueError:
             return ""
 
-    def _parse_and_decode_action(self, output_text: str) -> np.ndarray:
+    def _parse_and_decode_action(self, output_text: str):
         """
         [ACTION] ~ [/ACTION] 사이 action token 추출
         → action_tokenizer.decode_token_ids_to_actions() → action vector 복원.
 
-        Qwen 출력의 <action_N>에서 N을 추출하고
-        Qwen vocab 기준 token ID로 변환 후 디코딩.
+        :return: (action_vector: np.ndarray (7,), action_token_ids: np.ndarray (7,))
         """
         try:
             start = output_text.index("[ACTION]") + len("[ACTION]")
             end   = output_text.index("[/ACTION]")
             action_str = output_text[start:end].strip()
 
-            # <action_N>에서 N 추출
             indices = re.findall(r"<action_(\d+)>", action_str)
             indices = np.array([int(i) for i in indices[:7]])
 
-            # N → Qwen action token ID
-            # Qwen action token start = tokenizer 크기 - 256
             qwen_action_start = len(self.processor.tokenizer) - 256
             token_ids = indices + qwen_action_start
 
-            return self.action_tokenizer.decode_token_ids_to_actions(token_ids)
+            return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids
 
         except (ValueError, IndexError):
-            return np.zeros(7)
+            qwen_action_start = len(self.processor.tokenizer) - 256
+            dummy_token_ids   = np.array([qwen_action_start] * 7)
+            return np.zeros(7), dummy_token_ids
 
 
     # ─────────────────────────────────────────

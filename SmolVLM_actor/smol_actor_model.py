@@ -260,15 +260,23 @@ class ActorModel(nn.Module):
     def forward(
         self,
         image: Image.Image,
-        instruction: str
+        instruction: str,
+        planner_action_tokens=None
     ) -> torch.Tensor:
         """
         GRPO 학습 루프에서 호출. logits 반환.
 
+        planner_action_tokens를 넘기면 OpenVLA 호출 생략.
+        rollout에서 저장한 값을 재사용해서 OpenVLA 중복 호출 방지.
+
+        :param image: PIL Image
+        :param instruction: 태스크 명령 텍스트
+        :param planner_action_tokens: rollout에서 저장한 Planner token (없으면 ZeroMQ 호출)
         :return: logits shape (batch, seq_len, vocab_size)
         """
-        # 1. Planner action token 수신
-        planner_action_tokens = self.get_planner_action_tokens(image, instruction)
+        # 1. Planner action token 수신 (없으면 ZeroMQ 호출, 있으면 재사용)
+        if planner_action_tokens is None:
+            planner_action_tokens = self.get_planner_action_tokens(image, instruction)
 
         # 2. text/image 임베딩
         inputs = self.build_prompt(image, instruction, planner_action_tokens)
@@ -348,10 +356,11 @@ class ActorModel(nn.Module):
             skip_special_tokens=False
         )
 
-        critique      = self._parse_critique(output_text)
-        action_vector = self._parse_and_decode_action(output_text)
+        critique                    = self._parse_critique(output_text)
+        action_vector, action_token_ids = self._parse_and_decode_action(output_text)
 
-        return critique, action_vector
+        # planner_action_tokens도 반환해서 학습 단계에서 재사용
+        return critique, action_vector, action_token_ids, planner_action_tokens
 
 
     # ─────────────────────────────────────────
@@ -366,14 +375,11 @@ class ActorModel(nn.Module):
         except ValueError:
             return ""
 
-    def _parse_and_decode_action(self, output_text: str) -> np.ndarray:
+    def _parse_and_decode_action(self, output_text: str):
         """
         [ACTION] ~ [/ACTION] 사이 action token → action vector 복원.
 
-        SmolVLM2 기준:
-            <action_N>에서 N 추출
-            → smol_action_start + N = SmolVLM2 action token ID
-            → decode_token_ids_to_actions()
+        :return: (action_vector: np.ndarray (7,), action_token_ids: np.ndarray (7,))
         """
         try:
             start = output_text.index("[ACTION]") + len("[ACTION]")
@@ -383,14 +389,15 @@ class ActorModel(nn.Module):
             indices = re.findall(r"<action_(\d+)>", action_str)
             indices = np.array([int(i) for i in indices[:7]])
 
-            # SmolVLM2 action token ID 변환
             smol_action_start = len(self.processor.tokenizer) - 256
             token_ids = indices + smol_action_start
 
-            return self.action_tokenizer.decode_token_ids_to_actions(token_ids)
+            return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids
 
         except (ValueError, IndexError):
-            return np.zeros(7)
+            smol_action_start = len(self.processor.tokenizer) - 256
+            dummy_token_ids   = np.array([smol_action_start] * 7)
+            return np.zeros(7), dummy_token_ids
 
 
     # ─────────────────────────────────────────
