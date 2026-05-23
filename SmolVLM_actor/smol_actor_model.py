@@ -186,6 +186,20 @@ class ActorModel(nn.Module):
             raise AttributeError("vision_model을 찾을 수 없어요.")
 
 
+    def _get_connector(self):
+        """
+        vision encoder(768) → LLM(960) 변환 connector 반환.
+        SmolVLM2 구조: base_model.model.model.connector
+        """
+        try:
+            return self.smol.base_model.model.model.connector
+        except AttributeError:
+            for name, module in self.smol.named_modules():
+                if name.endswith("connector"):
+                    return module
+            raise AttributeError("connector를 찾을 수 없어요.")
+
+
     # ─────────────────────────────────────────
     # 공통: combined_embeds 생성
     # ─────────────────────────────────────────
@@ -206,13 +220,15 @@ class ActorModel(nn.Module):
         """
         embed_tokens = self._get_embed_tokens()
         vision_model = self._get_vision_model()
+        connector    = self._get_connector()
 
-        # pixel_values → vision encoder → image_embeds → 즉시 해제
+        # pixel_values → vision encoder(768) → connector(960) → image_embeds → 즉시 해제
         # num_frames=1로 제한했으므로 shape: (1, 1, 3, H, W) → (1, 3, H, W)
         pixel_values_gpu = inputs["pixel_values"].to("cuda")
         if pixel_values_gpu.dim() == 5:
             pixel_values_gpu = pixel_values_gpu[:, 0]  # 첫 프레임만 (1, 3, H, W)
-        image_embeds = vision_model(pixel_values_gpu).last_hidden_state
+        image_embeds = vision_model(pixel_values_gpu).last_hidden_state  # (1, patches, 768)
+        image_embeds = connector(image_embeds)                            # (1, patches, 960)
         del pixel_values_gpu
         torch.cuda.empty_cache()
 
@@ -328,11 +344,12 @@ class ActorModel(nn.Module):
             add_generation_prompt=True
         )
 
+        # CPU에 두고 반환 → _build_combined_embeds에서 단계별 GPU 올리고 즉시 해제
         inputs = self.processor(
             text=text,
             images=[image],
             return_tensors="pt"
-        ).to("cuda")
+        )
 
         return inputs
 

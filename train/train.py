@@ -19,6 +19,8 @@ OOM 수정 핵심:
 
 import sys
 import os
+import warnings
+warnings.filterwarnings("ignore")
 sys.path.append(os.path.join(os.path.dirname(__file__), "../qwen_actor"))
 
 import torch
@@ -37,7 +39,7 @@ from qwen_actor.actor_model import ActorModel
 
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
-NUM_EPISODES    = 300
+NUM_EPISODES    = 100
 MAX_STEPS       = 20
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
@@ -238,7 +240,8 @@ def collect_rollout(
                 "image":                 image,
                 "instruction":           instruction,
                 "action_token_ids":      torch.tensor(action_token_ids, dtype=torch.long),
-                "planner_action_tokens": planner_tokens,  # OpenVLA 재호출 방지용
+                "planner_action_tokens": planner_tokens,   # OpenVLA 재호출 방지용
+                "cached_inputs":         cached_inputs,    # processor 재호출 방지용
                 "action_vector":         action_vector,
                 "critique":              critique,
                 "reward":                reward,
@@ -300,15 +303,28 @@ def compute_grpo_loss_from_trajectories(
 
             # rollout에서 저장한 planner_action_tokens 재사용
             # → OpenVLA 중복 호출 없이 동일한 Planner token 사용
-            logits = actor.forward(
+            logits, input_ids = actor.forward(
                 step_data["image"],
                 step_data["instruction"],
-                planner_action_tokens=step_data["planner_action_tokens"]
+                planner_action_tokens=step_data["planner_action_tokens"],
+                cached_inputs=step_data["cached_inputs"]  # processor 재호출 없음
             )
 
-            # rollout에서 generate()가 선택한 token ID로 log_prob 계산
+            # [ACTION] 토큰 위치를 정확히 찾아서 log_prob 계산
+            # logits[-7:]이 아니라 [ACTION] 태그 다음 7개 위치 사용
             action_token_ids = step_data["action_token_ids"].to("cuda")
-            log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
+            try:
+                action_tag_id  = actor.processor.tokenizer.convert_tokens_to_ids("[ACTION]")
+                input_ids_list = input_ids[0].tolist()
+                action_tag_pos = input_ids_list.index(action_tag_id)
+                # [ACTION] 태그 다음 위치부터 7개 logits 사용
+                log_prob = torch.log_softmax(
+                    logits[0, action_tag_pos:action_tag_pos+7, :], dim=-1
+                )
+            except (ValueError, Exception):
+                # [ACTION] 태그를 못 찾으면 기존 방식으로 fallback
+                log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
+
             token_log_prob = log_prob[
                 torch.arange(7), action_token_ids
             ].sum()
@@ -323,7 +339,7 @@ def compute_grpo_loss_from_trajectories(
             total_loss  += step_loss.item()
             total_steps += 1
 
-            del logits, step_loss
+            del logits, input_ids, step_loss
             torch.cuda.empty_cache()
 
     return total_loss / max(total_steps, 1)
