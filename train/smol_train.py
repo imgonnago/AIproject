@@ -37,7 +37,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
-NUM_EPISODES    = 300
+NUM_EPISODES    = 100
 MAX_STEPS       = 20
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
@@ -215,13 +215,10 @@ def collect_rollout(
                 # action_vector:         환경에 실행할 연속값 (7,)
                 # action_token_ids:      학습 단계 log_prob 재계산용 (7,)
                 # planner_action_tokens: 학습 단계 forward() 재사용용 → OpenVLA 중복 호출 방지
-                critique, action_vector, action_token_ids, planner_tokens = actor.generate(
+                critique, action_vector, action_token_ids, planner_tokens, cached_inputs = actor.generate(
                     image=image,
                     instruction=instruction
                 )
-
-            # OOM 방지: rollout 단계는 VRAM 절약이 중요 → 매 스텝마다 불필요한 텐서 해제 + 캐시 정리
-            torch.cuda.empty_cache()
 
             # 매 스텝 critique + action 출력
             print(f"  [스텝 {step+1}] critique:      {critique[:60] if critique else '(없음)'}")
@@ -234,10 +231,9 @@ def collect_rollout(
 
             # trajectory 저장
             group_traj.append({
-                "image":                 image,
-                "instruction":           instruction,
                 "action_token_ids":      torch.tensor(action_token_ids, dtype=torch.long),
-                "planner_action_tokens": planner_tokens,  # OpenVLA 재호출 방지용
+                "planner_action_tokens": planner_tokens,
+                "cached_inputs":         cached_inputs,  # CPU → VRAM 누적 없음
                 "action_vector":         action_vector,
                 "critique":              critique,
                 "reward":                reward,
@@ -297,17 +293,25 @@ def compute_grpo_loss_from_trajectories(
             # 스텝마다 즉시 backward (OOM 수정 핵심)
             optimizer.zero_grad()
 
-            # rollout에서 저장한 planner_action_tokens 재사용
-            # → OpenVLA 중복 호출 없이 동일한 Planner token 사용
-            logits = actor.forward(
-                step_data["image"],
-                step_data["instruction"],
-                planner_action_tokens=step_data["planner_action_tokens"]
+            # cached_inputs(CPU) + planner_tokens 재사용
+            # → build_prompt, get_planner_action_tokens 재호출 없음
+            logits, input_ids = actor.forward(
+                planner_action_tokens=step_data["planner_action_tokens"],
+                cached_inputs=step_data["cached_inputs"]
             )
 
-            # rollout에서 generate()가 선택한 token ID로 log_prob 계산
+            # [ACTION] 토큰 위치 정확히 찾아서 log_prob 계산
             action_token_ids = step_data["action_token_ids"].to("cuda")
-            log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
+            try:
+                action_tag_id  = actor.processor.tokenizer.convert_tokens_to_ids("[ACTION]")
+                input_ids_list = input_ids[0].tolist()
+                action_tag_pos = input_ids_list.index(action_tag_id)
+                log_prob = torch.log_softmax(
+                    logits[0, action_tag_pos:action_tag_pos+7, :], dim=-1
+                )
+            except (ValueError, Exception):
+                log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
+
             token_log_prob = log_prob[
                 torch.arange(7), action_token_ids
             ].sum()
@@ -322,7 +326,7 @@ def compute_grpo_loss_from_trajectories(
             total_loss  += step_loss.item()
             total_steps += 1
 
-            del logits, step_loss
+            del logits, input_ids, step_loss
             torch.cuda.empty_cache()
 
     return total_loss / max(total_steps, 1)

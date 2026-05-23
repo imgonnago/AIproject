@@ -169,6 +169,90 @@ class ActorModel(nn.Module):
 
 
     # ─────────────────────────────────────────
+    # vision model 경로
+    # ─────────────────────────────────────────
+
+    def _get_vision_model(self):
+        """
+        LoRA 적용 후 vision model 경로 반환.
+        pixel_values → vision encoder → image_embeds
+        """
+        try:
+            return self.smol.base_model.model.model.vision_model
+        except AttributeError:
+            for name, module in self.smol.named_modules():
+                if "vision_model" in name and not name.endswith("."):
+                    return module
+            raise AttributeError("vision_model을 찾을 수 없어요.")
+
+
+    # ─────────────────────────────────────────
+    # 공통: combined_embeds 생성
+    # ─────────────────────────────────────────
+
+    def _build_combined_embeds(
+        self,
+        inputs: dict,
+        planner_action_tokens: np.ndarray
+    ) -> tuple:
+        """
+        generate()와 forward() 공통 로직.
+        pixel_values + input_ids + action_tokens → combined_embeds + combined_mask
+        단계별 GPU 올리고 즉시 해제 → VRAM 누적 방지
+
+        :param inputs: build_prompt() 출력 (CPU 텐서)
+        :param planner_action_tokens: OpenVLA action token IDs (7,)
+        :return: (combined_embeds, combined_mask, input_ids_saved)
+        """
+        embed_tokens = self._get_embed_tokens()
+        vision_model = self._get_vision_model()
+
+        # pixel_values → vision encoder → image_embeds → 즉시 해제
+        # num_frames=1로 제한했으므로 shape: (1, 1, 3, H, W) → (1, 3, H, W)
+        pixel_values_gpu = inputs["pixel_values"].to("cuda")
+        if pixel_values_gpu.dim() == 5:
+            pixel_values_gpu = pixel_values_gpu[:, 0]  # 첫 프레임만 (1, 3, H, W)
+        image_embeds = vision_model(pixel_values_gpu).last_hidden_state
+        del pixel_values_gpu
+        torch.cuda.empty_cache()
+
+        # input_ids → text_embeds → 즉시 해제
+        input_ids_gpu   = inputs["input_ids"].to("cuda")
+        input_ids_saved = input_ids_gpu
+        text_embeds     = embed_tokens(input_ids_gpu)
+        del input_ids_gpu
+        torch.cuda.empty_cache()
+
+        # attention_mask → GPU
+        attention_mask_gpu = inputs["attention_mask"].to("cuda")
+        torch.cuda.empty_cache()
+
+        # action_tokens → projection → action_embeds
+        action_token_tensor = torch.tensor(
+            planner_action_tokens, dtype=torch.long
+        ).to("cuda")
+
+        # image + text + action concat
+        combined_embeds = self.action_tokenizer.forward(
+            action_token_tensor,
+            text_embeds,
+            image_embeds
+        )  # (batch, num_patches+seq_len+7, 960)
+        del text_embeds, image_embeds, action_token_tensor
+        torch.cuda.empty_cache()
+
+        # attention mask 확장
+        num_image_patches = combined_embeds.shape[1] - attention_mask_gpu.shape[1] - 7
+        image_mask  = torch.ones(1, num_image_patches, dtype=torch.long, device="cuda")
+        action_mask = torch.ones(1, 7,                dtype=torch.long, device="cuda")
+        combined_mask = torch.cat([image_mask, attention_mask_gpu, action_mask], dim=1)
+        del attention_mask_gpu, image_mask, action_mask
+        torch.cuda.empty_cache()
+
+        return combined_embeds, combined_mask, input_ids_saved
+
+
+    # ─────────────────────────────────────────
     # ZeroMQ: Planner action token 요청
     # ─────────────────────────────────────────
 
@@ -259,54 +343,31 @@ class ActorModel(nn.Module):
 
     def forward(
         self,
-        image: Image.Image,
-        instruction: str,
-        planner_action_tokens=None
-    ) -> torch.Tensor:
+        planner_action_tokens: np.ndarray,
+        cached_inputs: dict
+    ) -> tuple:
         """
-        GRPO 학습 루프에서 호출. logits 반환.
+        GRPO 학습 루프에서 호출. (logits, input_ids) 반환.
 
-        planner_action_tokens를 넘기면 OpenVLA 호출 생략.
-        rollout에서 저장한 값을 재사용해서 OpenVLA 중복 호출 방지.
+        generate()에서 저장한 cached_inputs(CPU) 재사용
+        → build_prompt(), get_planner_action_tokens() 재호출 없음
 
-        :param image: PIL Image
-        :param instruction: 태스크 명령 텍스트
-        :param planner_action_tokens: rollout에서 저장한 Planner token (없으면 ZeroMQ 호출)
-        :return: logits shape (batch, seq_len, vocab_size)
+        :param planner_action_tokens: rollout에서 저장한 Planner token
+        :param cached_inputs: generate()에서 저장한 processor 출력 (CPU)
+        :return: (logits, input_ids_saved)
         """
-        # 1. Planner action token 수신 (없으면 ZeroMQ 호출, 있으면 재사용)
-        if planner_action_tokens is None:
-            planner_action_tokens = self.get_planner_action_tokens(image, instruction)
-
-        # 2. text/image 임베딩
-        inputs = self.build_prompt(image, instruction, planner_action_tokens)
-        embed_tokens = self._get_embed_tokens()
-        text_image_embeds = embed_tokens(inputs["input_ids"])  # (batch, seq_len, 960)
-
-        # 3. action 임베딩 + concat
-        action_token_tensor = torch.tensor(
-            planner_action_tokens, dtype=torch.long
-        ).to("cuda")
-
-        combined_embeds = self.action_tokenizer.forward(
-            action_token_tensor,
-            text_image_embeds
-        )  # (batch, seq_len+7, 960)
-
-        # attention mask 확장
-        action_mask = torch.ones(1, 7, dtype=torch.long, device="cuda")
-        combined_mask = torch.cat(
-            [inputs["attention_mask"], action_mask], dim=1
+        combined_embeds, combined_mask, input_ids_saved = self._build_combined_embeds(
+            cached_inputs, planner_action_tokens
         )
 
-        # 4. SmolVLM2 LLM + LoRA
         outputs = self.smol(
             inputs_embeds=combined_embeds,
             attention_mask=combined_mask,
-            pixel_values=inputs.get("pixel_values"),
         )
+        del combined_embeds, combined_mask
+        torch.cuda.empty_cache()
 
-        return outputs.logits
+        return outputs.logits, input_ids_saved
 
 
     # ─────────────────────────────────────────
@@ -321,46 +382,37 @@ class ActorModel(nn.Module):
         max_new_tokens: int = 50
     ) -> tuple:
         """
-        critique 텍스트 + 수정된 action vector 생성.
+        비판적 텍스트 + 수정된 action token 생성.
+        inputs(CPU)도 반환 → forward()에서 재사용 (build_prompt 재호출 방지)
         """
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
 
         inputs = self.build_prompt(image, instruction, planner_action_tokens)
-        embed_tokens = self._get_embed_tokens()
-        text_image_embeds = embed_tokens(inputs["input_ids"])
 
-        action_token_tensor = torch.tensor(
-            planner_action_tokens, dtype=torch.long
-        ).to("cuda")
-
-        combined_embeds = self.action_tokenizer.forward(
-            action_token_tensor,
-            text_image_embeds
-        )
-
-        action_mask = torch.ones(1, 7, dtype=torch.long, device="cuda")
-        combined_mask = torch.cat(
-            [inputs["attention_mask"], action_mask], dim=1
+        combined_embeds, combined_mask, _ = self._build_combined_embeds(
+            inputs, planner_action_tokens
         )
 
         generated_ids = self.smol.generate(
             inputs_embeds=combined_embeds,
             attention_mask=combined_mask,
-            pixel_values=inputs.get("pixel_values"),
             max_new_tokens=max_new_tokens,
-            do_sample=False
+            do_sample=False,
+            pad_token_id=self.processor.tokenizer.eos_token_id
         )
+        del combined_embeds, combined_mask
+        torch.cuda.empty_cache()
 
         output_text = self.processor.decode(
             generated_ids[0],
             skip_special_tokens=False
         )
 
-        critique                    = self._parse_critique(output_text)
+        critique = self._parse_critique(output_text)
         action_vector, action_token_ids = self._parse_and_decode_action(output_text)
 
-        # planner_action_tokens도 반환해서 학습 단계에서 재사용
-        return critique, action_vector, action_token_ids, planner_action_tokens
+        # inputs(CPU) 반환 → forward()에서 build_prompt 재호출 방지
+        return critique, action_vector, action_token_ids, planner_action_tokens, inputs
 
 
     # ─────────────────────────────────────────

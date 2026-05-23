@@ -162,32 +162,21 @@ class ActorActionTokenizer:
         )
         return self.bin_centers[discretized_actions]
 
-    def concat_embeddings(
-        self,
-        text_image_embeds: torch.Tensor,
-        action_embeds: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        text/image 임베딩 + action 임베딩 concat.
-
-        :param text_image_embeds: (batch, seq_len, 960)
-        :param action_embeds: (batch, 7, 960)
-        :return: (batch, seq_len+7, 960)
-        """
-        return torch.cat([text_image_embeds, action_embeds], dim=1)
-
     def forward(
         self,
         action_token_ids: torch.Tensor,
-        text_image_embeds: torch.Tensor
+        text_embeds: torch.Tensor,
+        image_embeds: torch.Tensor
     ) -> torch.Tensor:
         """
         매 추론 스텝 메인 함수.
-        Planner action token → 임베딩 → SmolVLM2 입력과 concat.
+        image + text + action 임베딩 concat.
 
         :param action_token_ids: shape (7,), Planner action token IDs
-        :param text_image_embeds: shape (batch, seq_len, 960)
-        :return: shape (batch, seq_len+7, 960)
+        :param text_embeds:  shape (batch, seq_len, 960)
+        :param image_embeds: shape (batch, num_patches, 960) ← vision encoder 출력
+        :return: shape (batch, num_patches+seq_len+7, 960)
         """
         action_embeds = self.embed_action_tokens(action_token_ids)  # (1, 7, 960)
-        return self.concat_embeddings(text_image_embeds, action_embeds)
+        # image + text + action 순서로 concat
+        return torch.cat([image_embeds, text_embeds, action_embeds], dim=1)
