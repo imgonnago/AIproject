@@ -206,10 +206,6 @@ class ActorModel(nn.Module):
         image: Image.Image,
         instruction: str
     ) -> np.ndarray:
-        """
-        ZeroMQ로 Planner(OpenVLA) 서버에 이미지 + 텍스트 전송,
-        action token ID 7개 수신.
-        """
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
 
@@ -236,12 +232,6 @@ class ActorModel(nn.Module):
         instruction: str,
         planner_action_token_ids: np.ndarray
     ) -> tuple:
-        """
-        SmolVLM2 메시지 구성.
-        apply_chat_template 방식으로 이미지+텍스트 통합 처리.
-
-        :return: (messages, image) → apply_chat_template에 넘길 형태
-        """
         action_str = " ".join(
             [f"<action_{i}>" for i in planner_action_token_ids]
         )
@@ -274,7 +264,6 @@ class ActorModel(nn.Module):
                 ]
             }
         ]
-
         return messages
 
     def _apply_chat_template(
@@ -283,21 +272,14 @@ class ActorModel(nn.Module):
         instruction: str,
         planner_action_token_ids: np.ndarray
     ) -> dict:
-        """
-        apply_chat_template 방식으로 inputs 생성 (CPU).
-        공식 SmolVLM2 사용법에 맞게 이미지+텍스트 통합 처리.
-        """
         messages = self._make_messages(image, instruction, planner_action_token_ids)
-
-        # 공식 방법: apply_chat_template으로 한번에 처리
         inputs = self.processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
             tokenize=True,
             return_dict=True,
             return_tensors="pt"
-        )  # CPU에 유지
-
+        )  
         return inputs
 
 
@@ -308,32 +290,32 @@ class ActorModel(nn.Module):
     def forward(
         self,
         planner_action_tokens: np.ndarray,
-        cached_inputs: dict
+        cached_inputs: dict,
+        new_tokens: torch.Tensor  # 🌟 새로 추가됨: Actor가 뱉어낸 전체 토큰 (Critique + Action)
     ) -> tuple:
         """
-        GRPO 학습 루프에서 호출. (logits, input_ids) 반환.
-
-        generate()에서 저장한 cached_inputs(CPU) 재사용
-        → _apply_chat_template(), get_planner_action_tokens() 재호출 없음
-
-        :param planner_action_tokens: rollout에서 저장한 Planner token
-        :param cached_inputs: generate()에서 저장한 apply_chat_template 출력 (CPU)
-        :return: (logits, input_ids_saved)
+        GRPO 학습 루프에서 호출. (logits, full_input_ids) 반환.
         """
         input_ids_with_action, attention_mask, pixel_values, input_ids_saved = self._prepare_inputs(cached_inputs, planner_action_tokens)
 
-        # SmolVLM 내부에서:
-        # pixel_values → vision encoder → 이미지 임베딩
-        # input_ids → embed_tokens → 텍스트+action 임베딩
+        #프롬프트(input_ids_with_action) 뒤에 Actor가 생성했던 new_tokens를 이어 붙임
+        new_tokens_gpu = new_tokens.unsqueeze(0).to("cuda")
+        full_input_ids = torch.cat([input_ids_with_action, new_tokens_gpu], dim=1)
+
+        # Attention Mask 확장 (새로 붙은 토큰들도 Attention 연산에 포함)
+        new_mask = torch.ones_like(new_tokens_gpu)
+        full_attention_mask = torch.cat([attention_mask, new_mask], dim=1)
+
         outputs = self.smol(
-            input_ids=input_ids_with_action,
-            attention_mask=attention_mask,
+            input_ids=full_input_ids,
+            attention_mask=full_attention_mask,
             pixel_values=pixel_values,
         )
-        del input_ids_with_action, attention_mask, pixel_values
+        del input_ids_with_action, attention_mask, pixel_values, new_tokens_gpu
         torch.cuda.empty_cache()
 
-        return outputs.logits, input_ids_saved
+        # 학습 로직의 인덱싱 슬라이싱을 위해 통합된 full_input_ids를 리턴합니다.
+        return outputs.logits, full_input_ids
 
 
     # ─────────────────────────────────────────
@@ -350,13 +332,8 @@ class ActorModel(nn.Module):
         비판적 텍스트 + 수정된 action token 생성.
         """
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
-
-        # 공식 방법: apply_chat_template으로 이미지+텍스트 통합 처리 (CPU)
         cached_inputs = self._apply_chat_template(image, instruction, planner_action_tokens)
-
-        # action token 붙이기 + GPU 이동
         input_ids_with_action, attention_mask, pixel_values, _ = self._prepare_inputs(cached_inputs, planner_action_tokens)
-
         input_length = input_ids_with_action.shape[1]
 
         generated_ids = self.smol.generate(
@@ -371,7 +348,6 @@ class ActorModel(nn.Module):
         del input_ids_with_action, attention_mask, pixel_values
         torch.cuda.empty_cache()
 
-        # [CRITICAL BUG FIX] 특수 액션 토큰 유실 방지를 위해 skip_special_tokens=False 설정 필수!
         new_tokens = generated_ids[0][input_length:]
         output_text = self.processor.decode(new_tokens, skip_special_tokens=False)
         
@@ -380,7 +356,8 @@ class ActorModel(nn.Module):
         critique = self._parse_critique(output_text)
         action_vector, action_token_ids = self._parse_and_decode_action(output_text)
 
-        return critique, action_vector, action_token_ids, planner_action_tokens, cached_inputs
+        # 🌟 Forward 함수에서 재사용할 수 있도록 new_tokens.cpu()를 반환에 추가합니다. (총 6개)
+        return critique, action_vector, action_token_ids, planner_action_tokens, cached_inputs, new_tokens.cpu()
 
 
     # ─────────────────────────────────────────
@@ -388,27 +365,20 @@ class ActorModel(nn.Module):
     # ─────────────────────────────────────────
 
     def _parse_critique(self, output_text: str) -> str:
-        """대괄호 누락이나 공백 유연성 보장 버전"""
         try:
-            # 정규식을 사용해 태그 사이의 텍스트를 유연하게 추출합니다.
             match = re.search(r"\[CRITIQUE\](.*?)(\[\/CRITIQUE\]|$)", output_text, re.DOTALL | re.IGNORECASE)
             return match.group(1).strip() if match else ""
         except Exception:
             return ""
 
     def _parse_and_decode_action(self, output_text: str):
-        """
-        [ACTION] ~ [/ACTION] 유연 파싱 및 토큰 가로채기
-        """
         try:
-            # ACTION 태그 매칭 유연화
             match = re.search(r"\[ACTION\](.*?)(\[\/ACTION\]|$)", output_text, re.DOTALL | re.IGNORECASE)
             if not match:
                 raise ValueError("ACTION 태그를 찾을 수 없습니다.")
                 
             action_str = match.group(1).strip()
 
-            # 숫자 7개 추출
             indices = re.findall(r"<action_(\d+)>", action_str)
             if len(indices) < 7:
                 raise IndexError("생성된 액션 토큰의 개수가 7개 미만입니다.")
@@ -421,7 +391,6 @@ class ActorModel(nn.Module):
             return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids
 
         except (ValueError, IndexError, AttributeError) as e:
-            # 예외 발생 시 디버깅을 위해 로깅 후 더미 패스
             smol_action_start = len(self.processor.tokenizer) - 256
             dummy_token_ids   = np.array([smol_action_start] * 7)
             return np.zeros(7), dummy_token_ids

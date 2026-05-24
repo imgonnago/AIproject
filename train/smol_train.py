@@ -42,7 +42,7 @@ MAX_STEPS       = 15
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
-GROUP_SIZE      = 5
+GROUP_SIZE      = 3
 
 # LR 스케줄러 설정
 LEARNING_RATE   = 1e-4
@@ -55,12 +55,6 @@ WARMUP_EPISODES = 20
 # ─────────────────────────────────────────
 
 def make_env(task_id: int):
-    """
-    LIBERO-Long 환경 초기화.
-
-    :param task_id: 태스크 인덱스 (0~9)
-    :return: (env, task_name)
-    """
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite     = benchmark_dict[TASK_SUITE]()
     task_names     = task_suite.get_task_names()
@@ -79,7 +73,6 @@ def make_env(task_id: int):
 
 
 def get_image_from_obs(obs: dict) -> Image.Image:
-    """LIBERO obs → PIL Image"""
     return Image.fromarray(obs["agentview_image"].astype(np.uint8))
 
 
@@ -88,19 +81,7 @@ def get_image_from_obs(obs: dict) -> Image.Image:
 # ─────────────────────────────────────────
 
 def reward_fn(action_vector: np.ndarray, obs, info: dict, done: bool) -> float:
-    """
-    다중 보상 신호를 결합한 보상 함수.
-
-    보상 구성:
-        +1.0               태스크 성공
-        -0.5               충돌 발생
-        -0.01 × overtime   100 스텝 초과 시 시간 패널티
-        +0.3 × stability   end-effector 속도 안정성 보상
-        -1.0               action_vector에 NaN 포함 시 패널티
-        clip [-1.0, 2.0]   최종 보상 클리핑
-    """
     total_reward = 0.0
-
     try:
         success = info.get("success", False)
         if success:
@@ -137,9 +118,6 @@ def reward_fn(action_vector: np.ndarray, obs, info: dict, done: bool) -> float:
 # ─────────────────────────────────────────
 
 def make_scheduler(optimizer, num_episodes: int):
-    """
-    Linear Warmup + Cosine Annealing 스케줄러 생성.
-    """
     warmup = LinearLR(
         optimizer,
         start_factor=0.1,
@@ -169,25 +147,6 @@ def collect_rollout(
     instruction: str,
     group_size: int = GROUP_SIZE
 ) -> list:
-    """
-    RLinf 방식의 rollout 수집.
-
-    핵심 변경:
-        기존: forward() → logits에서 바로 action token 샘플링
-              → critique 텍스트 없음 → 비판적 평가 없음
-        수정: generate() 사용
-              → [CRITIQUE] 텍스트 생성 → [ACTION] action token 생성
-              → 원래 의도한 비판적 재평가 구조
-
-    generate()가 반환하는 action_token_ids를
-    학습 단계에서 log_prob 재계산에 사용.
-
-    :param actor: ActorModel (SmolVLM2 기반)
-    :param env: LIBERO 환경
-    :param instruction: 태스크 명령 텍스트
-    :param group_size: 수집할 trajectory 수
-    :return: group_size개 trajectory list
-    """
     trajectories = []
     obs = env.reset()
 
@@ -207,25 +166,17 @@ def collect_rollout(
         for step in range(MAX_STEPS):
             image = get_image_from_obs(obs)
 
-            # generate()로 critique + action token + action vector 생성
-            # no_grad: rollout 단계는 inference만 수행 → VRAM 절약
             with torch.no_grad():
-                # generate()가 4개 반환:
-                # critique:              Actor의 비판 텍스트
-                # action_vector:         환경에 실행할 연속값 (7,)
-                # action_token_ids:      학습 단계 log_prob 재계산용 (7,)
-                # planner_action_tokens: 학습 단계 forward() 재사용용 → OpenVLA 중복 호출 방지
-                critique, action_vector, action_token_ids, planner_tokens, cached_inputs = actor.generate(
+                # 🌟 수정: generate()가 반환하는 6개의 값을 모두 받습니다 (new_tokens 추가)
+                critique, action_vector, action_token_ids, planner_tokens, cached_inputs, new_tokens = actor.generate(
                     image=image,
                     instruction=instruction
                 )
 
-            # 매 스텝 critique + action 출력
             print(f"  [스텝 {step+1}] critique:      {critique[:60] if critique else '(없음)'}")
             print(f"  [스텝 {step+1}] action_vector: {action_vector}")
             print(f"  [스텝 {step+1}] action_tokens: {action_token_ids}")
 
-            # LIBERO 환경에 action 실행
             obs, _, done, info = env.step(action_vector)
             reward = reward_fn(action_vector, obs, info, done)
 
@@ -233,7 +184,8 @@ def collect_rollout(
             group_traj.append({
                 "action_token_ids":      torch.tensor(action_token_ids, dtype=torch.long),
                 "planner_action_tokens": planner_tokens,
-                "cached_inputs":         cached_inputs,  # CPU → VRAM 누적 없음
+                "cached_inputs":         cached_inputs,
+                "new_tokens":            new_tokens,      # 🌟 새로 추가: Actor가 생성한 전체 토큰 텐서
                 "action_vector":         action_vector,
                 "critique":              critique,
                 "reward":                reward,
@@ -257,21 +209,6 @@ def compute_grpo_loss_from_trajectories(
     trajectories: list,
     optimizer: AdamW
 ) -> float:
-    """
-    수집된 trajectory로 GRPO loss 계산 + 스텝마다 즉시 업데이트.
-
-    OOM 수정:
-        스텝마다 즉시 backward() + optimizer.step()
-        → 각 스텝 gradient graph 즉시 해제 → VRAM 절약
-
-    rollout에서 generate()가 선택한 action_token_ids로
-    log_prob을 재계산해서 GRPO loss 계산.
-
-    :param actor: ActorModel
-    :param trajectories: collect_rollout() 반환값
-    :param optimizer: AdamW (스텝마다 즉시 업데이트)
-    :return: 평균 loss (float, logging용)
-    """
     rewards = torch.tensor(
         [traj[-1]["reward"] for traj in trajectories],
         dtype=torch.float32
@@ -289,33 +226,35 @@ def compute_grpo_loss_from_trajectories(
         adv = advantages[g].to("cuda")
 
         for step_data in traj:
-
-            # 스텝마다 즉시 backward (OOM 수정 핵심)
             optimizer.zero_grad()
 
-            # cached_inputs(CPU) + planner_tokens 재사용
-            # → build_prompt, get_planner_action_tokens 재호출 없음
+            #Actor가 뱉어냈던 전체 문장 텐서를 GPU로 올려 forward()에 전달
+            new_tokens = step_data["new_tokens"].to("cuda")
+            
             logits, input_ids = actor.forward(
                 planner_action_tokens=step_data["planner_action_tokens"],
-                cached_inputs=step_data["cached_inputs"]
+                cached_inputs=step_data["cached_inputs"],
+                new_tokens=new_tokens #새로 추가됨
             )
 
-            # log_prob 계산
-            # forward()는 input_ids_with_action(프롬프트+planner_action 7개)을 입력으로 받음
-            # logits[-7:]이 planner action token 위치의 확률 분포
-            # Actor가 생성한 action_token_ids로 log_prob 계산
-            action_token_ids = step_data["action_token_ids"].to("cuda")
-
-            # logits의 마지막 7개: planner action token 다음에 뭘 출력할지 확률
-            # → Actor가 수정한 action token들의 확률
-            log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
+            #[수학적 붕괴 해결 파트]
+            # 전체 input_ids(프롬프트 + 생성된 토큰)에서 프롬프트의 길이를 빼서 오프셋을 맞춤
+            prompt_length = input_ids.shape[1] - new_tokens.shape[0]
+            
+            # Logit의 성질상 인덱스 i는 토큰 i+1을 예측함
+            # 따라서 새로 생성된 토큰들(new_tokens)을 예측한 Logits의 정확한 슬라이싱 범위는 [prompt_length - 1 : -1]
+            gen_logits = logits[0, prompt_length - 1 : -1, :] 
+            
+            log_prob = torch.log_softmax(gen_logits, dim=-1)
+            
+            # 전체 생성된 문장 (Critique 비판 텍스트 + Action tokens 전체) 의 결합 로그 확률 합산
             token_log_prob = log_prob[
-                torch.arange(7), action_token_ids
+                torch.arange(new_tokens.shape[0]), new_tokens
             ].sum()
 
+            #Actor의 전체 사고 과정(Critique)과 행동(Action)에 Advantage 스칼라를 곱해 GRPO Loss 산출
             step_loss = -(token_log_prob * adv)
 
-            # 즉시 backward → gradient graph 해제
             step_loss.backward()
             torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
             optimizer.step()
@@ -323,7 +262,7 @@ def compute_grpo_loss_from_trajectories(
             total_loss  += step_loss.item()
             total_steps += 1
 
-            del logits, input_ids, step_loss
+            del logits, input_ids, step_loss, new_tokens
             torch.cuda.empty_cache()
 
     return total_loss / max(total_steps, 1)
@@ -334,10 +273,6 @@ def compute_grpo_loss_from_trajectories(
 # ─────────────────────────────────────────
 
 def run_episode(env, actor: ActorModel, instruction: str) -> dict:
-    """
-    단일 에피소드 실행 (성능 평가용).
-    gradient 계산 없음.
-    """
     obs     = env.reset()
     success = False
 
@@ -345,7 +280,8 @@ def run_episode(env, actor: ActorModel, instruction: str) -> dict:
         image = get_image_from_obs(obs)
 
         with torch.no_grad():
-            _, action_vector, _, _ = actor.generate(
+            #에러 방어: 리턴 개수가 늘어났으므로 *_ (나머지 몽땅)로 유연하게 언팩 처리
+            _, action_vector, *_ = actor.generate(
                 image=image,
                 instruction=instruction
             )
@@ -368,19 +304,6 @@ def run_episode(env, actor: ActorModel, instruction: str) -> dict:
 # ─────────────────────────────────────────
 
 def train_on_task(actor: ActorModel, task_id: int) -> dict:
-    """
-    단일 태스크 GRPO 학습.
-
-    학습 루프 구조:
-        [1단계] collect_rollout() - no_grad
-            → generate()로 critique + action token 생성
-            → 매 스텝 critique/action 출력
-            → reward_fn()으로 보상 계산
-
-        [2단계] compute_grpo_loss_from_trajectories() - gradient
-            → 스텝마다 즉시 backward + optimizer.step()
-            → scheduler.step() (에피소드 단위)
-    """
     env, task_name = make_env(task_id)
     instruction    = task_name
 
@@ -403,26 +326,22 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
 
         print(f"\n[에피소드 {episode+1}] rollout 수집 중...")
 
-        # [1단계] rollout 수집 (no_grad)
         trajectories = collect_rollout(actor, env, instruction, GROUP_SIZE)
 
         last_done = trajectories[0][-1]["done"]
         if last_done:
             successes.append(trajectories[0][-1]["reward"] >= 1.0)
 
-        # [2단계] GRPO loss 계산 + 즉시 업데이트
         loss_val = compute_grpo_loss_from_trajectories(
             actor, trajectories, optimizer
         )
 
-        # LR 스케줄러 (에피소드 단위)
         scheduler.step()
         torch.cuda.empty_cache()
 
         losses.append(loss_val)
         current_lr = scheduler.get_last_lr()[0]
 
-        # 로그 출력 (10 에피소드마다)
         if (episode + 1) % 10 == 0:
             recent_success = np.mean(successes[-10:]) * 100 if successes else 0
             recent_loss    = np.mean(losses[-10:])
@@ -434,7 +353,6 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
                 f"lr: {current_lr:.2e}"
             )
 
-        # 체크포인트 저장 (100 에피소드마다)
         if (episode + 1) % 100 == 0:
             save_dir = f"{SAVE_PATH}/task_{task_id}_ep_{episode+1}"
             actor.smol.save_pretrained(save_dir)
@@ -461,10 +379,6 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
 # ─────────────────────────────────────────
 
 def main():
-    """
-    전체 학습 루프.
-    태스크 0 → 1 → 2 순서로 300 에피소드씩 학습.
-    """
     print("Actor 모델 초기화 중...")
     print("Planner 서버(openvla_inference_code.py)가 실행 중이어야 합니다.")
 
