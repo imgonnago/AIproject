@@ -18,7 +18,7 @@
 
 **Actor 1** : Qwen2.5VL 3B + 4bit + LoRA + GRPO
 
-**Actor 2** : SmolVLM 500B + 4bit + LoRA + GRPO <- (use)
+**Actor 2** : SmolVLM 500B + 4bit + LoRA + GRPO <- **(use)**
 
 **Simulator** : LIBREO-Long
 
@@ -155,9 +155,10 @@ python train/train.py
 
 **기타 설정**
 ---
-```
+
 모델 실행시 vram 사용량과 train log를 기록할 수 있는 코드.
 
+```
 #vram_log
 
 nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &
@@ -182,10 +183,19 @@ nvidia-smi pmon -c 1
 vscode에서 계속 SSH서버가 끊어질 때, 우분투에서
 
 `tmux new -s planner`
+
 `conda activate openvla`
+
+실행하기 전 프로젝트 폴더 안으로 이동해서 실행.
+
 `python openvla_planner/openvla_inference_code.py`
 
 `tmux new -s train`
+
 `conda activate qwen`
+
+마찬가지로 프로젝트 폴더 안으로 이동해서 실행.
+
 `nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &`
+
 `python train/smol_train.py 2>&1 | tee train_log.txt`s
