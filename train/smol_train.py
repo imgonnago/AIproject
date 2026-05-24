@@ -38,7 +38,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
 NUM_EPISODES    = 100
-MAX_STEPS       = 20
+MAX_STEPS       = 15
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
@@ -300,18 +300,15 @@ def compute_grpo_loss_from_trajectories(
                 cached_inputs=step_data["cached_inputs"]
             )
 
-            # [ACTION] 토큰 위치 정확히 찾아서 log_prob 계산
+            # log_prob 계산
+            # forward()는 input_ids_with_action(프롬프트+planner_action 7개)을 입력으로 받음
+            # logits[-7:]이 planner action token 위치의 확률 분포
+            # Actor가 생성한 action_token_ids로 log_prob 계산
             action_token_ids = step_data["action_token_ids"].to("cuda")
-            try:
-                action_tag_id  = actor.processor.tokenizer.convert_tokens_to_ids("[ACTION]")
-                input_ids_list = input_ids[0].tolist()
-                action_tag_pos = input_ids_list.index(action_tag_id)
-                log_prob = torch.log_softmax(
-                    logits[0, action_tag_pos:action_tag_pos+7, :], dim=-1
-                )
-            except (ValueError, Exception):
-                log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
 
+            # logits의 마지막 7개: planner action token 다음에 뭘 출력할지 확률
+            # → Actor가 수정한 action token들의 확률
+            log_prob = torch.log_softmax(logits[0, -7:, :], dim=-1)
             token_log_prob = log_prob[
                 torch.arange(7), action_token_ids
             ].sum()

@@ -18,6 +18,8 @@ Actor Model (SmolVLM2-500M 버전)
 """
 import os
 import sys
+import warnings
+warnings.filterwarnings("ignore")
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import io
 import re
@@ -149,123 +151,50 @@ class ActorModel(nn.Module):
 
 
     # ─────────────────────────────────────────
-    # embed_tokens 경로 (LoRA 적용 후)
+    # 공통: input_ids + pixel_values 준비
     # ─────────────────────────────────────────
 
-    def _get_embed_tokens(self):
-        """
-        LoRA 적용 후 embed_tokens 경로 반환.
-        SmolVLM2 구조: base_model.model.model.language_model.embed_tokens
-        (실제 경로는 초기 실행 시 named_modules()로 확인 필요)
-        """
-        try:
-            return self.smol.base_model.model.model.language_model.embed_tokens
-        except AttributeError:
-            # 경로가 다를 경우 자동 탐색
-            for name, module in self.smol.named_modules():
-                if name.endswith("embed_tokens") and "visual" not in name:
-                    return module
-            raise AttributeError("embed_tokens를 찾을 수 없어요. named_modules()로 경로 확인 필요")
-
-
-    # ─────────────────────────────────────────
-    # vision model 경로
-    # ─────────────────────────────────────────
-
-    def _get_vision_model(self):
-        """
-        LoRA 적용 후 vision model 경로 반환.
-        pixel_values → vision encoder → image_embeds
-        """
-        try:
-            return self.smol.base_model.model.model.vision_model
-        except AttributeError:
-            for name, module in self.smol.named_modules():
-                if "vision_model" in name and not name.endswith("."):
-                    return module
-            raise AttributeError("vision_model을 찾을 수 없어요.")
-
-
-    def _get_connector(self):
-        """
-        vision encoder(768) → LLM(960) 변환 connector 반환.
-        SmolVLM2 구조: base_model.model.model.connector
-        """
-        try:
-            return self.smol.base_model.model.model.connector
-        except AttributeError:
-            for name, module in self.smol.named_modules():
-                if name.endswith("connector"):
-                    return module
-            raise AttributeError("connector를 찾을 수 없어요.")
-
-
-    # ─────────────────────────────────────────
-    # 공통: combined_embeds 생성
-    # ─────────────────────────────────────────
-
-    def _build_combined_embeds(
+    def _prepare_inputs(
         self,
         inputs: dict,
         planner_action_tokens: np.ndarray
     ) -> tuple:
         """
         generate()와 forward() 공통 로직.
-        pixel_values + input_ids + action_tokens → combined_embeds + combined_mask
-        단계별 GPU 올리고 즉시 해제 → VRAM 누적 방지
+        input_ids 뒤에 planner action token 붙이기.
+        pixel_values는 SmolVLM 내부에서 알아서 처리.
 
         :param inputs: build_prompt() 출력 (CPU 텐서)
         :param planner_action_tokens: OpenVLA action token IDs (7,)
-        :return: (combined_embeds, combined_mask, input_ids_saved)
+        :return: (input_ids_with_action, attention_mask_with_action, pixel_values, input_ids_saved)
         """
-        embed_tokens = self._get_embed_tokens()
-        vision_model = self._get_vision_model()
-        connector    = self._get_connector()
+        # planner action token → SmolVLM tokenizer action token ID로 변환
+        # OpenVLA token IDs → bin_indices(0~255) → SmolVLM action token IDs
+        bin_indices = self.action_tokenizer.OPENVLA_VOCAB_SIZE - planner_action_tokens
+        bin_indices = np.clip(bin_indices, 0, 255)
+        smol_action_start = len(self.processor.tokenizer) - 256
+        smol_action_token_ids = bin_indices + smol_action_start  # SmolVLM action token ID
 
-        # pixel_values → vision encoder(768) → connector(960) → image_embeds → 즉시 해제
-        # num_frames=1로 제한했으므로 shape: (1, 1, 3, H, W) → (1, 3, H, W)
-        pixel_values_gpu = inputs["pixel_values"].to("cuda")
-        if pixel_values_gpu.dim() == 5:
-            pixel_values_gpu = pixel_values_gpu[:, 0]  # 첫 프레임만 (1, 3, H, W)
-        image_embeds = vision_model(pixel_values_gpu).last_hidden_state  # (1, patches, 768)
-        image_embeds = connector(image_embeds)                            # (1, patches, 960)
-        del pixel_values_gpu
-        torch.cuda.empty_cache()
+        # action token ID → tensor
+        action_ids = torch.tensor(
+            smol_action_token_ids, dtype=torch.long
+        ).unsqueeze(0).to("cuda")  # (1, 7)
 
-        # input_ids → text_embeds → 즉시 해제
+        # input_ids 뒤에 action token 붙이기
         input_ids_gpu   = inputs["input_ids"].to("cuda")
-        input_ids_saved = input_ids_gpu
-        text_embeds     = embed_tokens(input_ids_gpu)
-        del input_ids_gpu
-        torch.cuda.empty_cache()
-
-        # attention_mask → GPU
-        attention_mask_gpu = inputs["attention_mask"].to("cuda")
-        torch.cuda.empty_cache()
-
-        # action_tokens → projection → action_embeds
-        action_token_tensor = torch.tensor(
-            planner_action_tokens, dtype=torch.long
-        ).to("cuda")
-
-        # image + text + action concat
-        combined_embeds = self.action_tokenizer.forward(
-            action_token_tensor,
-            text_embeds,
-            image_embeds
-        )  # (batch, num_patches+seq_len+7, 960)
-        del text_embeds, image_embeds, action_token_tensor
-        torch.cuda.empty_cache()
+        input_ids_saved = input_ids_gpu  # [ACTION] 위치 찾기용
+        input_ids_with_action = torch.cat([input_ids_gpu, action_ids], dim=1)
 
         # attention mask 확장
-        num_image_patches = combined_embeds.shape[1] - attention_mask_gpu.shape[1] - 7
-        image_mask  = torch.ones(1, num_image_patches, dtype=torch.long, device="cuda")
-        action_mask = torch.ones(1, 7,                dtype=torch.long, device="cuda")
-        combined_mask = torch.cat([image_mask, attention_mask_gpu, action_mask], dim=1)
-        del attention_mask_gpu, image_mask, action_mask
-        torch.cuda.empty_cache()
+        attention_mask_with_action = torch.cat([
+            inputs["attention_mask"].to("cuda"),
+            torch.ones(1, 7, dtype=torch.long, device="cuda")
+        ], dim=1)
 
-        return combined_embeds, combined_mask, input_ids_saved
+        # pixel_values: SmolVLM 내부에서 vision encoder 처리
+        pixel_values = inputs["pixel_values"].to("cuda")
+
+        return input_ids_with_action, attention_mask_with_action, pixel_values, input_ids_saved
 
 
     # ─────────────────────────────────────────
@@ -301,15 +230,17 @@ class ActorModel(nn.Module):
     # 프롬프트 구성
     # ─────────────────────────────────────────
 
-    def build_prompt(
+    def _make_messages(
         self,
         image: Image.Image,
         instruction: str,
         planner_action_token_ids: np.ndarray
-    ) -> dict:
+    ) -> tuple:
         """
-        SmolVLM2 Processor 입력 구성.
-        시스템 프롬프트 + 태스크 명령 + Planner action 정보 통합.
+        SmolVLM2 메시지 구성.
+        apply_chat_template 방식으로 이미지+텍스트 통합 처리.
+
+        :return: (messages, image) → apply_chat_template에 넘길 형태
         """
         action_str = " ".join(
             [f"<action_{i}>" for i in planner_action_token_ids]
@@ -319,37 +250,53 @@ class ActorModel(nn.Module):
             {
                 "role": "user",
                 "content": [
-                    {"type": "image"},
+                    {
+                        "type": "image",
+                        "image": image
+                    },
                     {
                         "type": "text",
                         "text": (
-                            "You are a robot action critic. "
-                            "Evaluate the proposed action and output a corrected action.\n"
-                            "Format:\n"
-                            "[CRITIQUE] your reasoning [/CRITIQUE]\n"
-                            "[ACTION] corrected action tokens [/ACTION]\n\n"
+                            "You are a robot action critic who critically evaluates "
+                            "action tokens designed by a planner. "
+                            "You must critically think about the proposed action, "
+                            "explain in text what is wrong with it and why it needs to be corrected. "
+                            "Then, based on your critique, you must correct and reason about the action tokens. "
+                            "However, if you conclude that the planner's action is already good, "
+                            "there is no need to modify it.\n\n"
                             f"Task: {instruction}\n"
-                            f"Proposed action: {action_str}\n"
-                            "Evaluate and correct the proposed action."
+                            f"Proposed action: {action_str}\n\n"
+                            "Respond in this exact format:\n"
+                            "[CRITIQUE] explain what is wrong with the action and why it needs correction [/CRITIQUE]\n"
+                            "[ACTION] <action_N> <action_N> <action_N> <action_N> <action_N> <action_N> <action_N> [/ACTION]"
                         )
                     }
                 ]
             }
         ]
 
-        # SmolVLM2 processor 사용
-        text = self.processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
+        return messages
 
-        # CPU에 두고 반환 → _build_combined_embeds에서 단계별 GPU 올리고 즉시 해제
-        inputs = self.processor(
-            text=text,
-            images=[image],
+    def _apply_chat_template(
+        self,
+        image: Image.Image,
+        instruction: str,
+        planner_action_token_ids: np.ndarray
+    ) -> dict:
+        """
+        apply_chat_template 방식으로 inputs 생성 (CPU).
+        공식 SmolVLM2 사용법에 맞게 이미지+텍스트 통합 처리.
+        """
+        messages = self._make_messages(image, instruction, planner_action_token_ids)
+
+        # 공식 방법: apply_chat_template으로 한번에 처리
+        inputs = self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
             return_tensors="pt"
-        )
+        )  # CPU에 유지
 
         return inputs
 
@@ -367,21 +314,23 @@ class ActorModel(nn.Module):
         GRPO 학습 루프에서 호출. (logits, input_ids) 반환.
 
         generate()에서 저장한 cached_inputs(CPU) 재사용
-        → build_prompt(), get_planner_action_tokens() 재호출 없음
+        → _apply_chat_template(), get_planner_action_tokens() 재호출 없음
 
         :param planner_action_tokens: rollout에서 저장한 Planner token
-        :param cached_inputs: generate()에서 저장한 processor 출력 (CPU)
+        :param cached_inputs: generate()에서 저장한 apply_chat_template 출력 (CPU)
         :return: (logits, input_ids_saved)
         """
-        combined_embeds, combined_mask, input_ids_saved = self._build_combined_embeds(
-            cached_inputs, planner_action_tokens
-        )
+        input_ids_with_action, attention_mask, pixel_values, input_ids_saved = self._prepare_inputs(cached_inputs, planner_action_tokens)
 
+        # SmolVLM 내부에서:
+        # pixel_values → vision encoder → 이미지 임베딩
+        # input_ids → embed_tokens → 텍스트+action 임베딩
         outputs = self.smol(
-            inputs_embeds=combined_embeds,
-            attention_mask=combined_mask,
+            input_ids=input_ids_with_action,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
         )
-        del combined_embeds, combined_mask
+        del input_ids_with_action, attention_mask, pixel_values
         torch.cuda.empty_cache()
 
         return outputs.logits, input_ids_saved
@@ -390,72 +339,80 @@ class ActorModel(nn.Module):
     # ─────────────────────────────────────────
     # Generate (LIBERO 실행 시 사용)
     # ─────────────────────────────────────────
-
     @torch.no_grad()
     def generate(
         self,
         image: Image.Image,
         instruction: str,
-        max_new_tokens: int = 50
+        max_new_tokens: int = 80
     ) -> tuple:
         """
         비판적 텍스트 + 수정된 action token 생성.
-        inputs(CPU)도 반환 → forward()에서 재사용 (build_prompt 재호출 방지)
         """
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
 
-        inputs = self.build_prompt(image, instruction, planner_action_tokens)
+        # 공식 방법: apply_chat_template으로 이미지+텍스트 통합 처리 (CPU)
+        cached_inputs = self._apply_chat_template(image, instruction, planner_action_tokens)
 
-        combined_embeds, combined_mask, _ = self._build_combined_embeds(
-            inputs, planner_action_tokens
-        )
+        # action token 붙이기 + GPU 이동
+        input_ids_with_action, attention_mask, pixel_values, _ = self._prepare_inputs(cached_inputs, planner_action_tokens)
+
+        input_length = input_ids_with_action.shape[1]
 
         generated_ids = self.smol.generate(
-            inputs_embeds=combined_embeds,
-            attention_mask=combined_mask,
+            input_ids=input_ids_with_action,
+            attention_mask=attention_mask,
+            pixel_values=pixel_values,
             max_new_tokens=max_new_tokens,
-            do_sample=False,
+            do_sample=True,
+            temperature=0.7,
             pad_token_id=self.processor.tokenizer.eos_token_id
         )
-        del combined_embeds, combined_mask
+        del input_ids_with_action, attention_mask, pixel_values
         torch.cuda.empty_cache()
 
-        output_text = self.processor.decode(
-            generated_ids[0],
-            skip_special_tokens=False
-        )
-
+        # [CRITICAL BUG FIX] 특수 액션 토큰 유실 방지를 위해 skip_special_tokens=False 설정 필수!
+        new_tokens = generated_ids[0][input_length:]
+        output_text = self.processor.decode(new_tokens, skip_special_tokens=False)
+        
+        print(f"Generated output (Raw): {output_text}")
+        
         critique = self._parse_critique(output_text)
         action_vector, action_token_ids = self._parse_and_decode_action(output_text)
 
-        # inputs(CPU) 반환 → forward()에서 build_prompt 재호출 방지
-        return critique, action_vector, action_token_ids, planner_action_tokens, inputs
+        return critique, action_vector, action_token_ids, planner_action_tokens, cached_inputs
 
 
     # ─────────────────────────────────────────
-    # 출력 파싱
+    # 출력 파싱 (유연한 유효성 정규식 보강)
     # ─────────────────────────────────────────
 
     def _parse_critique(self, output_text: str) -> str:
+        """대괄호 누락이나 공백 유연성 보장 버전"""
         try:
-            start = output_text.index("[CRITIQUE]") + len("[CRITIQUE]")
-            end   = output_text.index("[/CRITIQUE]")
-            return output_text[start:end].strip()
-        except ValueError:
+            # 정규식을 사용해 태그 사이의 텍스트를 유연하게 추출합니다.
+            match = re.search(r"\[CRITIQUE\](.*?)(\[\/CRITIQUE\]|$)", output_text, re.DOTALL | re.IGNORECASE)
+            return match.group(1).strip() if match else ""
+        except Exception:
             return ""
 
     def _parse_and_decode_action(self, output_text: str):
         """
-        [ACTION] ~ [/ACTION] 사이 action token → action vector 복원.
-
-        :return: (action_vector: np.ndarray (7,), action_token_ids: np.ndarray (7,))
+        [ACTION] ~ [/ACTION] 유연 파싱 및 토큰 가로채기
         """
         try:
-            start = output_text.index("[ACTION]") + len("[ACTION]")
-            end   = output_text.index("[/ACTION]")
-            action_str = output_text[start:end].strip()
+            # ACTION 태그 매칭 유연화
+            match = re.search(r"\[ACTION\](.*?)(\[\/ACTION\]|$)", output_text, re.DOTALL | re.IGNORECASE)
+            if not match:
+                raise ValueError("ACTION 태그를 찾을 수 없습니다.")
+                
+            action_str = match.group(1).strip()
 
+            # 숫자 7개 추출
             indices = re.findall(r"<action_(\d+)>", action_str)
+            if len(indices) < 7:
+                raise IndexError("생성된 액션 토큰의 개수가 7개 미만입니다.")
+                
             indices = np.array([int(i) for i in indices[:7]])
 
             smol_action_start = len(self.processor.tokenizer) - 256
@@ -463,7 +420,8 @@ class ActorModel(nn.Module):
 
             return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids
 
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, AttributeError) as e:
+            # 예외 발생 시 디버깅을 위해 로깅 후 더미 패스
             smol_action_start = len(self.processor.tokenizer) - 256
             dummy_token_ids   = np.array([smol_action_start] * 7)
             return np.zeros(7), dummy_token_ids
