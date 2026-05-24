@@ -18,7 +18,7 @@
 
 **Actor 1** : Qwen2.5VL 3B + 4bit + LoRA + GRPO
 
-**Actor 2** : SmolVLM 500B + 4bit + LoRA + GRPO
+**Actor 2** : SmolVLM 500B + 4bit + LoRA + GRPO <- (use)
 
 **Simulator** : LIBREO-Long
 
