@@ -151,9 +151,11 @@ python openvla_planner/openvla_inference_code.py
 #파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
 
 python train/train.py
+```
 
 **기타 설정**
 ---
+```
 모델 실행시 vram 사용량과 train log를 기록할 수 있는 코드.
 
 #vram_log
@@ -175,3 +177,15 @@ watch -n 0.5 nvidia-smi
 #GPU가 어떤 프로세스를 사용하는지 확인할 수 있는 코드.
 
 nvidia-smi pmon -c 1
+```
+
+vscode에서 계속 SSH서버가 끊어질 때, 우분투에서
+
+`tmux new -s planner`
+`conda activate openvla`
+`python openvla_planner/openvla_inference_code.py`
+
+`tmux new -s train`
+`conda activate qwen`
+`nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &`
+`python train/smol_train.py 2>&1 | tee train_log.txt`s
