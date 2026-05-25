@@ -125,7 +125,7 @@ class ActorModel(nn.Module):
             SMOL_MODEL_PATH,
             quantization_config=bnb_config,
             device_map="cuda",
-            attn_implementation="sdpa"
+            attn_implementation="eager"
         )
 
         # ── 5. Action embedding 초기화 ───────────────
@@ -158,12 +158,24 @@ class ActorModel(nn.Module):
         #        text_model(LLM) 진입 직전 시점에 action_embeds 삽입
         # → image/text/action 세 가지가 모두 LLM에 전달됨
         self._action_embeds_buffer = [None]  # hook closure용 mutable container
+        self._action_insert_pos   = [None]  # None=끝에 append, int=해당 위치에 insert
         text_model = self.smol.base_model.model.model.text_model  # SmolLM2 backbone
         text_model.register_forward_pre_hook(
             self._action_injection_hook,
             with_kwargs=True  # PyTorch 2.0+ 필요
         )
         print("[action hook] text_model pre-hook 등록 완료")
+
+        # ── connector hook: generate() 중 image features 캡처 ──
+        # generate()에서 SmolVLM2가 내부적으로 pixel_values → connector 처리한 결과를 캡처
+        # → forward()(학습)에서 이 features를 image_hidden_states로 재사용
+        # → 학습 시 vision encoder 재실행 없음 → OOM 방지
+        # → inputs_merger가 기대하는 정확한 형식 보장
+        self._ihs_cache    = [None]   # 캡처된 image features
+        self._capture_ihs  = False    # generate() 중에만 캡처 활성화
+        connector = self.smol.base_model.model.model.connector
+        connector.register_forward_hook(self._connector_output_hook)
+        print("[connector hook] image features 캡처 hook 등록 완료")
 
         # ── 8. ZeroMQ ────────────────────────────────
         zmq_context = zmq.Context()
@@ -184,6 +196,20 @@ class ActorModel(nn.Module):
 
         embed_layer.weight.register_hook(_sparse_hook)
         print(f"[sparse hook] action embedding 행({smol_action_start}~)만 학습")
+
+    def _connector_output_hook(self, module, input, output):
+        """
+        SmolVLM2 connector(pixel shuffle) 출력을 캡처.
+
+        캡처 시점: generate() 내부에서 pixel_values → vision_model → connector 처리 후
+        캡처 결과: inputs_merger가 기대하는 정확한 형식의 image_hidden_states
+            shape: (1, n_compressed_patches, hidden_size)
+        
+        이 features를 training forward()에서 image_hidden_states로 넘기면
+        inputs_merger가 동일한 포맷으로 인식 → 검증 통과
+        """
+        if self._capture_ihs:
+            self._ihs_cache[0] = output.detach().cpu()
 
     def _action_injection_hook(self, module, args, kwargs):
         """
@@ -317,7 +343,8 @@ class ActorModel(nn.Module):
         self,
         cached_inputs: dict,
         new_tokens: torch.Tensor,
-        planner_action_tokens: np.ndarray
+        planner_action_tokens: np.ndarray,
+        image_hidden_states: torch.Tensor   # generate()에서 캡처된 connector 출력 (CPU)
     ) -> tuple:
         """
         Projection gradient 흐름:
@@ -331,21 +358,24 @@ class ActorModel(nn.Module):
 
         :return: (logits, prompt_length)
         """
-        input_ids = cached_inputs["input_ids"].to("cuda")
+        input_ids      = cached_inputs["input_ids"].to("cuda")
         attention_mask = cached_inputs["attention_mask"].to("cuda")
 
-        # vision encoder frozen + detach → OOM 없음
-        pixel_values = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
-        pixel_values.requires_grad_(False)
-
         # Projection으로 action_embeds 계산 (gradient 흐름 유지)
-        # → hook을 통해 LLM inputs에 삽입됨
+        # → _action_injection_hook이 insert_pos 위치(=prompt 끝)에 삽입
         action_embeds = self.action_tokenizer.embed_action_tokens(
             torch.tensor(planner_action_tokens, dtype=torch.long)
         )  # (1, 7, 960)
 
-        # hook이 삽입할 7개 토큰 위치를 포함한 prompt_length
+        # prompt_length: original prompt + 7 (hook이 prompt 끝에 삽입)
+        # LLM이 보는 sequence: [prompt | action_7 | new_tokens]
+        # gen_logits = logits[0, prompt_length-1:-1] → (N, vocab) ✓
         prompt_length = input_ids.shape[1] + 7
+
+        # image_hidden_states: generate()의 connector hook이 캡처한 features
+        # SmolVLM2 내부 처리와 동일한 형식 → inputs_merger 검증 통과
+        # vision encoder 재실행 없음 → OOM 방지
+        ihs_gpu = image_hidden_states.to("cuda")
 
         new_tokens_gpu = new_tokens.unsqueeze(0).to("cuda")
         full_ids  = torch.cat([input_ids, new_tokens_gpu], dim=1)
@@ -356,17 +386,18 @@ class ActorModel(nn.Module):
 
         try:
             self._action_embeds_buffer[0] = action_embeds
-            # SmolVLM2 forward:
-            #   embed(input_ids) → inputs_merger(image 병합) → hook(action 삽입) → LLM
+            self._action_insert_pos[0]    = input_ids.shape[1]  # prompt 끝에 insert
             outputs = self.smol(
                 input_ids=full_ids,
                 attention_mask=full_mask,
-                pixel_values=pixel_values,
+                pixel_values=None,
+                image_hidden_states=ihs_gpu,
             )
         finally:
-            self._action_embeds_buffer[0] = None  # 예외 발생해도 버퍼 클리어
+            self._action_embeds_buffer[0] = None
+            self._action_insert_pos[0]    = None
 
-        del input_ids, attention_mask, pixel_values, new_tokens_gpu, full_ids, full_mask
+        del input_ids, attention_mask, ihs_gpu, new_tokens_gpu, full_ids, full_mask
         torch.cuda.empty_cache()
 
         return outputs.logits, prompt_length
@@ -420,6 +451,9 @@ class ActorModel(nn.Module):
 
         try:
             self._action_embeds_buffer[0] = action_embeds
+            self._action_insert_pos[0]    = None   # generate: 프롬프트 끝에 append
+            self._capture_ihs = True               # connector hook 캡처 활성화
+            self._ihs_cache[0] = None
             generated_ids = self.smol.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -431,6 +465,12 @@ class ActorModel(nn.Module):
             )
         finally:
             self._action_embeds_buffer[0] = None
+            self._action_insert_pos[0]    = None
+            self._capture_ihs = False
+
+        # connector hook이 캡처한 image features
+        # → inputs_merger가 기대하는 정확한 형식 보장 → training forward()에서 재사용
+        image_hidden_states = self._ihs_cache[0]
 
         del input_ids, attention_mask, pixel_values
         torch.cuda.empty_cache()
@@ -452,7 +492,7 @@ class ActorModel(nn.Module):
 
         return (critique, action_vector, action_token_ids,
                 planner_action_tokens, cached_inputs,
-                new_tokens.cpu(), parsing_failed)
+                new_tokens.cpu(), parsing_failed, image_hidden_states)
 
 
     # ─────────────────────────────────────────

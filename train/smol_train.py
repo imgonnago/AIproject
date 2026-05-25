@@ -168,7 +168,7 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
                 # generate()는 7-tuple 반환 (image_hidden_states 없음)
                 (critique, action_vector, action_token_ids,
                  planner_tokens, cached_inputs,
-                 new_tokens, parsing_failed) = actor.generate(
+                 new_tokens, parsing_failed, image_hidden_states) = actor.generate(
                     image=image, instruction=instruction
                 )
 
@@ -183,8 +183,9 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
 
             group_traj.append({
                 "cached_inputs":         cached_inputs,
-                "new_tokens":            new_tokens,         # CPU tensor
-                "planner_action_tokens": planner_tokens,     # raw OpenVLA IDs
+                "new_tokens":            new_tokens,           # CPU tensor
+                "image_hidden_states":   image_hidden_states,  # connector 캡처 (CPU)
+                "planner_action_tokens": planner_tokens,       # raw OpenVLA IDs
                 "action_token_ids":      torch.tensor(action_token_ids, dtype=torch.long),
                 "action_vector":         action_vector,
                 "critique":              critique,
@@ -245,7 +246,8 @@ def compute_grpo_loss_from_trajectories(
             logits, prompt_length = actor.forward(
                 cached_inputs=step_data["cached_inputs"],
                 new_tokens=new_tokens,
-                planner_action_tokens=step_data["planner_action_tokens"]
+                planner_action_tokens=step_data["planner_action_tokens"],
+                image_hidden_states=step_data["image_hidden_states"]
             )
 
             # logit 슬라이싱
