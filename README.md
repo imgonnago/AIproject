@@ -195,6 +195,10 @@ vscode에서 계속 SSH서버가 끊어질 때, 우분투에서
 `conda activate qwen`
 
 마찬가지로 프로젝트 폴더 안으로 이동해서 실행.
+```
+#모델 실행 전 이 환경변수를 설정하면 vram에 도움됨.
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
 
 `nvidia-smi --query-gpu=timestamp,memory.used --format=csv -l 1 >> vram_log.csv &`
 
