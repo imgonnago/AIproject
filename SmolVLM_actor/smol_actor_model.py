@@ -55,9 +55,9 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=3, max_new_tokens=50, lora_r=8,  lora_alpha=16, use_8bit_adam=False, label="12GB")
+        cfg = dict(group_size=2, max_new_tokens=150, lora_r=4,  lora_alpha=8, use_8bit_adam=True, label="12GB")
     elif total_gb >= 7:
-        cfg = dict(group_size=3, max_new_tokens=40, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
+        cfg = dict(group_size=2, max_new_tokens=150, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
     else:
         cfg = dict(group_size=1, max_new_tokens=30,  lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="6GB")
 
@@ -181,7 +181,7 @@ class ActorModel(nn.Module):
         planner_action_token_ids: np.ndarray
     ) -> list:
         """
-        [수정] 출력 형식: <action_N> 토큰 → 정수 (0~255)
+        출력 형식: <action_N> 토큰 → 정수 (0~255)
 
         수정 전 문제:
             입력에 '→ <action_128>' 표시 → 모델이 이 형식을 출력에 복사
@@ -250,7 +250,7 @@ class ActorModel(nn.Module):
 
     def _prepare_inputs(self, inputs: dict) -> tuple:
         """
-        [수정] action token ID를 input_ids에 붙이는 로직 제거.
+        action token ID를 input_ids에 붙이는 로직 제거.
 
         제거 이유:
             출력 형식이 <action_N> 토큰 → 정수로 바뀌었으므로
@@ -277,7 +277,7 @@ class ActorModel(nn.Module):
         new_tokens: torch.Tensor
     ) -> tuple:
         """
-        [수정] planner_action_tokens 파라미터 제거
+        planner_action_tokens 파라미터 제거
               (프롬프트에 이미 연속값으로 포함되어 있음)
 
         반환: (logits, prompt_length)
@@ -341,14 +341,15 @@ class ActorModel(nn.Module):
 
         critique = self._parse_critique(output_text)
 
-        # [수정] planner_bin_indices를 fallback으로 전달
-        action_vector, action_token_ids = self._parse_and_decode_action(
-            output_text, planner_bin_indices
+        # [*수정*] planner_bin_indices fallback 전달 제거 및 parsing_failed 플래그 수신
+        action_vector, action_token_ids, parsing_failed = self._parse_and_decode_action(
+            output_text
         )
 
         self._log_modification(planner_bin_indices, action_token_ids)
 
-        return critique, action_vector, action_token_ids, planner_action_tokens, cached_inputs, new_tokens.cpu()
+        # [*수정*] 반환 튜플 마지막에 parsing_failed 추가
+        return critique, action_vector, action_token_ids, planner_action_tokens, cached_inputs, new_tokens.cpu(), parsing_failed
 
 
     # ─────────────────────────────────────────
@@ -372,27 +373,20 @@ class ActorModel(nn.Module):
 
     def _parse_and_decode_action(
         self,
-        output_text: str,
-        planner_bin_indices: np.ndarray
+        output_text: str
     ) -> tuple:
         """
-        [수정] 정수 출력 파서 + lenient fallback.
-
-        파싱 우선순위:
-            1. "ACTION: N1 N2 N3 N4 N5 N6 N7" 형식 파싱
-            2. 출력 전체에서 유효 정수(0~255) 7개 추출
-            3. 부족하면 플래너 값으로 채움 (zeros 대신)
-
-        fallback이 zeros가 아닌 플래너 값인 이유:
-            zeros → 로봇이 아무것도 안 함 → 항상 실패 → 보상 없음 → 학습 불가
-            플래너 값 → 최소한 OpenVLA 수준 행동 → 일부 성공 가능 → 보상 신호 유지
+        [*수정*] 정수 출력 파서 (Reward Hacking 방지를 위해 fallback 제거 및 엄격한 규격 파싱 적용)
         """
         smol_action_start = len(self.processor.tokenizer) - 256
+        
+        # [*수정*] 파싱 완전 실패 시 사용할 안전한 중립값(128) 생성 (로봇 급발진 방지)
+        fallback_bins = np.full(7, 128)
 
-        def bins_to_result(bin_list):
+        def bins_to_result(bin_list, failed=False):
             arr = np.clip(np.array(bin_list[:7]), 0, 255)
             token_ids = arr + smol_action_start
-            return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids
+            return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids, failed
 
         try:
             # ① ACTION: 뒤 정수 파싱 (가장 엄격한 형식)
@@ -405,8 +399,8 @@ class ActorModel(nn.Module):
                     int(n) for n in re.findall(r"\b(\d{1,3})\b", action_match.group(1))
                     if 0 <= int(n) <= 255
                 ]
-                if len(nums) >= 7:
-                    return bins_to_result(nums)
+                if len(nums) == 7: # [*수정*] 정확히 7개일 때만 허용
+                    return bins_to_result(nums, failed=False)
 
             # ② [ACTION]...[/ACTION] 사이 정수 파싱
             action_tag = re.search(
@@ -418,8 +412,8 @@ class ActorModel(nn.Module):
                     int(n) for n in re.findall(r"\b(\d{1,3})\b", action_tag.group(1))
                     if 0 <= int(n) <= 255
                 ]
-                if len(nums) >= 7:
-                    return bins_to_result(nums)
+                if len(nums) == 7: # [*수정*] 정확히 7개일 때만 허용
+                    return bins_to_result(nums, failed=False)
 
             # ③ 전체 출력에서 유효 정수 추출 (가장 lenient)
             all_nums = [
@@ -427,23 +421,17 @@ class ActorModel(nn.Module):
                 if 0 <= int(n) <= 255
             ]
 
-            if len(all_nums) >= 7:
-                return bins_to_result(all_nums)
+            if len(all_nums) == 7: # [*수정*] 정확히 7개일 때만 허용
+                return bins_to_result(all_nums, failed=False)
 
-            # ④ 일부만 있으면 나머지를 플래너 값으로 채움
-            if len(all_nums) > 0:
-                filled = list(all_nums[:7])
-                while len(filled) < 7:
-                    filled.append(int(planner_bin_indices[len(filled)]))
-                print(f"[파싱 부분성공] {len(all_nums)}개 파싱 → 나머지 플래너 값으로 채움")
-                return bins_to_result(filled)
+            # [*수정*] ④ 일부만 파싱됐을 때 나머지를 플래너 값으로 채우는 기존 우회 로직 삭제
 
         except Exception as e:
             print(f"[파싱 오류] {e}")
 
-        # ⑤ 완전 실패 → 플래너 값 사용 (zeros 아님)
-        print("[파싱 실패] 플래너 값 사용 (zeros 방지)")
-        return bins_to_result(list(planner_bin_indices))
+        # [*수정*] ⑤ 규격에 맞지 않거나 파싱 완전 실패 시 -> 실패 플래그(True)와 함께 중립값 반환
+        print("[파싱 실패] 규격 미달 또는 파싱 불가 -> 페널티 부여 대상")
+        return bins_to_result(fallback_bins, failed=True)
 
     def _log_modification(
         self,

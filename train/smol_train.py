@@ -39,14 +39,14 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
 NUM_EPISODES    = 60
-MAX_STEPS       = 15
+MAX_STEPS       = 10
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
 
-LEARNING_RATE   = 1e-4
+LEARNING_RATE   = 2e-4
 LR_MIN          = 1e-6
-WARMUP_EPISODES = 20
+WARMUP_EPISODES = 5
 
 # 위치 기반 loss 가중치
 # 생성 토큰의 앞 70%: critique 영역 (0.3)
@@ -104,6 +104,10 @@ def get_image_from_obs(obs: dict) -> Image.Image:
 
 def reward_fn(action_vector: np.ndarray, info: dict) -> float:
     try:
+        # [*수정*] 파싱 실패 상태가 감지되면 어떠한 경우라도 최하점(-1.0) 부여
+        if info.get("parsing_failed", False):
+            return -1.0
+
         reward = 0.0
         if info.get("success", False):
             reward += 1.0
@@ -156,8 +160,9 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
             image = get_image_from_obs(obs)
 
             with torch.no_grad():
+                # [*수정*] parsing_failed 상태값을 튜플 맨 뒤에서 추가로 받음
                 critique, action_vector, action_token_ids, \
-                planner_tokens, cached_inputs, new_tokens = actor.generate(
+                planner_tokens, cached_inputs, new_tokens, parsing_failed = actor.generate(
                     image=image, instruction=instruction
                 )
 
@@ -166,6 +171,9 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
             print("=" * 50)
 
             obs, _, done, info = env.step(action_vector)
+            
+            # [*수정*] 보상 함수로 보내기 직전 info 변수에 파싱 결과를 안전하게 주입
+            info["parsing_failed"] = parsing_failed
             reward = reward_fn(action_vector, info)
 
             group_traj.append({
@@ -197,7 +205,7 @@ def compute_grpo_loss_from_trajectories(
     optimizer: torch.optim.Optimizer
 ) -> float:
     """
-    [수정] 위치 기반 critique/action 가중치.
+    위치 기반 critique/action 가중치.
 
     출력 토큰 구조:
         [CRITIQUE 텍스트 (긴 부분)] [ACTION: 숫자 7개 (짧은 부분)]
@@ -230,7 +238,6 @@ def compute_grpo_loss_from_trajectories(
             N = new_tokens.shape[0]
 
             # ── forward ────────────────────────────────────────────
-            # [수정] planner_action_tokens 파라미터 제거
             logits, prompt_length = actor.forward(
                 cached_inputs=step_data["cached_inputs"],
                 new_tokens=new_tokens
@@ -289,6 +296,7 @@ def run_episode(env, actor: ActorModel, instruction: str) -> dict:
     obs, success = env.reset(), False
     for step in range(MAX_STEPS):
         with torch.no_grad():
+            # [참고] Python의 *_ 언패킹 문법 덕분에 추가된 parsing_failed 변수 처리에 코드 수정이 필요 없습니다.
             _, action_vector, *_ = actor.generate(
                 image=get_image_from_obs(obs), instruction=instruction
             )
@@ -346,7 +354,8 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
             print(f"  체크포인트 저장: {save_dir}")
 
     env.close()
-    return {
+    
+    stats = {
         "task_id":      task_id,
         "task_name":    task_name,
         "avg_loss":     float(np.mean(losses)),
