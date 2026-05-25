@@ -55,11 +55,11 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=3, max_new_tokens=150, lora_r=8,  lora_alpha=16, use_8bit_adam=False, label="12GB")
+        cfg = dict(group_size=3, max_new_tokens=50, lora_r=8,  lora_alpha=16, use_8bit_adam=False, label="12GB")
     elif total_gb >= 7:
-        cfg = dict(group_size=2, max_new_tokens=100, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
+        cfg = dict(group_size=3, max_new_tokens=40, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
     else:
-        cfg = dict(group_size=1, max_new_tokens=80,  lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="6GB")
+        cfg = dict(group_size=1, max_new_tokens=30,  lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="6GB")
 
     print(f"[VRAM 설정] {cfg['label']}: group={cfg['group_size']}, "
           f"max_new={cfg['max_new_tokens']}, lora_r={cfg['lora_r']}")
@@ -213,8 +213,10 @@ class ActorModel(nn.Module):
                     f"Proposed robot arm action (7-DOF):\n{action_lines}\n\n"
                     "Values are in range [-1.0, +1.0]. Bin index 0=minimum(-1.0), "
                     "128=neutral(0.0), 255=maximum(+1.0).\n\n"
+                    "You are a robot action critic.\n"
+                    "You have to evaluate the proposed action and correct it if necessary.\n"
                     "Look at the image. Evaluate the action for this task.\n"
-                    "If correct, keep the same bin values. If not, correct them.\n\n"
+                    "If correct, keep the same bin values. If not, explain why it's not correct and correct them.\n\n"
                     "Reply EXACTLY in this format:\n"
                     "CRITIQUE: [one sentence evaluation]\n"
                     f"ACTION: [7 integers 0-255]\n\n"
@@ -334,7 +336,8 @@ class ActorModel(nn.Module):
 
         new_tokens  = generated_ids[0][input_length:]
         output_text = self.processor.decode(new_tokens, skip_special_tokens=True)
-        print(f"[generate] {output_text[:150]}")
+        print("=" * 50)
+        print(f"[generate] {output_text[:50]}")
 
         critique = self._parse_critique(output_text)
 

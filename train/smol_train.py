@@ -38,7 +38,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0, 1, 2]
-NUM_EPISODES    = 100
+NUM_EPISODES    = 60
 MAX_STEPS       = 15
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
@@ -163,6 +163,7 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
 
             print(f"  [G{g+1} S{step+1}] {critique[:60] if critique else '(critique 없음)'}")
             print(f"  [G{g+1} S{step+1}] action: {np.round(action_vector, 3)}")
+            print("=" * 50)
 
             obs, _, done, info = env.step(action_vector)
             reward = reward_fn(action_vector, info)
