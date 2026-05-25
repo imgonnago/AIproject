@@ -1,32 +1,29 @@
 """
-Actor Model (SmolVLM2-500M, 출력 형식 수정 버전)
+Actor Model (SmolVLM2-500M, Paradigm A - Forward Hook 방식)
 
-[핵심 수정]
-문제: SmolVLM2는 <action_N> 특수 토큰 생성법을 모름
-      → SFT 없이 GRPO만으로 cold start 불가
-      → 파싱 실패 → zeros → 보상 없음 → 학습 불가
+[설계 구조]
+    image + text → SmolVLM2 정상 처리 (inputs_merger 포함)
+                                    ↓
+                              text_model 진입 직전
+                              ← pre-hook으로 action_embeds 삽입
+                                    ↓
+    [image_embeds + text_embeds + action_embeds] → LLM
 
-해결:
-    ① 출력 형식: <action_N> 토큰 → 정수 (0~255)
-       모델이 자연스럽게 생성 가능한 형식으로 변경
-    ② 프롬프트: → <action_N> 입력 제거 (모델이 따라씀)
-       연속값만 표시 + 명확한 예시 추가
-    ③ 파서: lenient (부분 파싱 허용)
-       파싱 실패 시 zeros → 플래너 값 fallback
-       (최소한 플래너 수준의 행동 보장 → 보상 신호 유지)
-    ④ max_new_tokens 증가 (70 → 100/150)
-       응답이 잘려서 ACTION 태그 미생성 방지
+[핵심 원리]
+    SmolVLM2가 image+text를 inputs_merger로 합치는 과정을 그대로 유지.
+    text_model(SmolLM2) 진입 직전에만 Projection 출력 action_embeds를 concat.
+    → inputs_merger 충돌 없음
+    → Projection gradient 흐름 유지 (forward()에서 gradient 계산)
+    → pixel_values를 직접 사용하므로 image_hidden_states 형식 문제 없음
 
-[OOM 수정] Vision Feature Caching
-문제: actor.forward() 호출마다 pixel_values → Vision Encoder 재실행
-      rollout 20회 + 학습 20회 = 40회 vision encoder 실행
-      → query @ key 행렬 연산에서 CUDA driver OOM 발생
+[학습 컴포넌트]
+    LoRA (q/k/v)             : SmolVLM2 LLM attention 학습
+    Projection               : GRPO loss → logits → LLM → action_embeds → Projection
+    action token embedding   : sparse hook으로 <action_N> 256행 학습
 
-해결:
-    extract_image_features(): generate() 내에서 vision encoder를 1회만 실행
-    → image_hidden_states를 CPU 텐서로 캐싱 (~0.15MB/step)
-    forward(): image_hidden_states를 직접 주입, pixel_values/vision encoder 완전 skip
-    → 학습 시 vision encoder 실행 횟수: 20회 → 0회
+[OOM 방지]
+    vision encoder frozen + pixel_values.detach()
+    → vision encoder 중간 활성화 backward 전 즉시 해제
 """
 import os
 import sys
@@ -66,11 +63,11 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=2, max_new_tokens=30, lora_r=4,  lora_alpha=8, use_8bit_adam=True, label="12GB")
+        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
     elif total_gb >= 7:
-        cfg = dict(group_size=2, max_new_tokens=30, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
+        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="8GB")
     else:
-        cfg = dict(group_size=2, max_new_tokens=30,  lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="6GB")
+        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="6GB")
 
     print(f"[VRAM 설정] {cfg['label']}: group={cfg['group_size']}, "
           f"max_new={cfg['max_new_tokens']}, lora_r={cfg['lora_r']}")
@@ -102,7 +99,10 @@ class ActorModel(nn.Module):
         print("Processor 로드 중...")
         self.processor = AutoProcessor.from_pretrained(SMOL_MODEL_PATH)
 
-        # ── 2. Projection ────────────────────────────
+        # ── 2. Projection ─────────────────────────────
+        # Paradigm A의 핵심 학습 컴포넌트
+        # OpenVLA embedding space(4096) → SmolVLM2 LLM space(960) 번역
+        # GRPO 학습을 통해 이 번역 능력이 개선됨
         self.projection = Projection(OPENVLA_DIM, SMOL_DIM).to("cuda")
 
         # ── 3. ActionTokenizer ───────────────────────
@@ -125,7 +125,7 @@ class ActorModel(nn.Module):
             SMOL_MODEL_PATH,
             quantization_config=bnb_config,
             device_map="cuda",
-            attn_implementation="eager"
+            attn_implementation="sdpa"
         )
 
         # ── 5. Action embedding 초기화 ───────────────
@@ -137,8 +137,7 @@ class ActorModel(nn.Module):
         # ── 6. LoRA + sparse embedding hook ─────────
         self.smol = prepare_model_for_kbit_training(self.smol, use_gradient_checkpointing=True)
 
-        # [*수정*] Vision 인코더 완벽 차단 (VRAM 폭발 원천 봉쇄)
-        # LLM 부분(비판 텍스트 및 액션 토큰 생성)만 학습에 참여하도록 비전 파라미터를 강제로 얼림
+        # Vision encoder freeze: OOM 방지 (detach + frozen → backward 없음)
         for name, param in self.smol.named_parameters():
             if "vision" in name.lower() or "visual" in name.lower():
                 param.requires_grad_(False)
@@ -154,13 +153,26 @@ class ActorModel(nn.Module):
         self.smol.print_trainable_parameters()
         self._register_action_only_embedding_hook()
 
-        # ── 7. ZeroMQ ────────────────────────────────
+        # ── 7. Action embedding 삽입용 pre-hook ──────
+        # 핵심: inputs_merger(image+text 합침) 이후,
+        #        text_model(LLM) 진입 직전 시점에 action_embeds 삽입
+        # → image/text/action 세 가지가 모두 LLM에 전달됨
+        self._action_embeds_buffer = [None]  # hook closure용 mutable container
+        text_model = self.smol.base_model.model.model.text_model  # SmolLM2 backbone
+        text_model.register_forward_pre_hook(
+            self._action_injection_hook,
+            with_kwargs=True  # PyTorch 2.0+ 필요
+        )
+        print("[action hook] text_model pre-hook 등록 완료")
+
+        # ── 8. ZeroMQ ────────────────────────────────
         zmq_context = zmq.Context()
         self.planner_socket = zmq_context.socket(zmq.REQ)
         self.planner_socket.connect(f"tcp://{PLANNER_HOST}:{PLANNER_PORT}")
         print("ActorModel initialization complete!")
 
     def _register_action_only_embedding_hook(self):
+        """<action_N> embedding 행(마지막 256개)만 gradient 허용."""
         smol_action_start = len(self.processor.tokenizer) - 256
         embed_layer = self.smol.get_input_embeddings()
         embed_layer.weight.requires_grad_(True)
@@ -173,46 +185,59 @@ class ActorModel(nn.Module):
         embed_layer.weight.register_hook(_sparse_hook)
         print(f"[sparse hook] action embedding 행({smol_action_start}~)만 학습")
 
-
-    # ─────────────────────────────────────────
-    # [OOM 수정] Image Feature 추출 및 캐싱
-    # ─────────────────────────────────────────
-
-    def extract_image_features(self, cached_inputs: dict) -> torch.Tensor:
+    def _action_injection_hook(self, module, args, kwargs):
         """
-        [OOM 수정] Vision encoder를 1회 실행해 image_hidden_states를 CPU 텐서로 반환.
+        [Paradigm A 핵심] SmolLM2 transformer 진입 직전 호출.
 
-        generate()에서 1회 호출 → CPU에 저장 → forward()에서 재사용
-        이를 통해 학습 forward() 시 vision encoder 재실행을 완전히 차단.
+        호출 시점:
+            SmolVLMModel.forward():
+                image_features = get_image_features(pixel_values)
+                merged = inputs_merger(input_ids, embeds, image_features)  ← image+text 합침
+                text_model(inputs_embeds=merged, ...)  ← 여기 진입 직전에 hook 실행
 
-        PEFT 모델 접근 경로:
-            self.smol                              (PeftModelForCausalLM)
-              .base_model                          (LoraModel)
-                .model                             (SmolVLMForConditionalGeneration)
-                  .model                           (SmolVLMModel)
-                    .get_image_features(pv)  <- 여기 호출
+        삽입 조건: prefill 스텝에서만 삽입 (past_key_values=None)
+            generate() prefill:  action_embeds 삽입 → KV cache에 저장 → decode는 캐시 사용
+            forward() training:  단일 pass → action_embeds 삽입
+            generate() decode:   past_key_values 있음 → 삽입 안 함 (이미 캐시에 있음)
 
-        :param cached_inputs: _apply_chat_template() 반환값 (pixel_values는 CPU 텐서)
-        :return: image_hidden_states, CPU tensor, shape (1, n_image_tokens, hidden_size)
-                 에피소드당 ~0.15MB로 매우 작음
+        결과:
+            inputs_embeds: (1, seq, 960) → (1, seq+7, 960)
+            attention_mask: (1, seq) → (1, seq+7)
         """
-        with torch.no_grad():
-            # cached_inputs["pixel_values"]는 CPU → GPU로 이동
-            pv = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16)
+        action_embeds = self._action_embeds_buffer[0]
+        if action_embeds is None:
+            return args, kwargs
 
-            # PEFT 래퍼를 통과해 SmolVLMModel의 get_image_features() 직접 호출
-            # SmolVLMModel은 vision encoder + pixel shuffle connector를 포함
-            smolvlm_inner = self.smol.base_model.model.model  # SmolVLMModel
-            features = smolvlm_inner.get_image_features(pixel_values=pv)
+        # decode 스텝이면 이미 KV cache에 action이 있으므로 스킵
+        if kwargs.get("past_key_values") is not None:
+            return args, kwargs
 
-            if not isinstance(features, torch.Tensor):
-                features = features.last_hidden_state
+        embeds = kwargs.get("inputs_embeds")
+        if embeds is None:
+            return args, kwargs
 
-            del pv
-            torch.cuda.empty_cache()
+        # action_embeds concat: (1, seq, 960) + (1, 7, 960) → (1, seq+7, 960)
+        kwargs["inputs_embeds"] = torch.cat(
+            [embeds, action_embeds.to(embeds.dtype)], dim=1
+        )
 
-        # CPU로 이동해서 반환: 학습 시 GPU 메모리를 점유하지 않음
-        return features.cpu()
+        # attention mask 확장: (1, seq) → (1, seq+7)
+        mask = kwargs.get("attention_mask")
+        if mask is not None:
+            extra = torch.ones(1, 7, dtype=mask.dtype, device=mask.device)
+            kwargs["attention_mask"] = torch.cat([mask, extra], dim=1)
+
+        # position_ids 확장 (제공된 경우): 연속적인 위치 추가
+        pos_ids = kwargs.get("position_ids")
+        if pos_ids is not None:
+            last_pos = pos_ids[0, -1].item()
+            extra_pos = torch.arange(
+                last_pos + 1, last_pos + 8,
+                dtype=pos_ids.dtype, device=pos_ids.device
+            ).unsqueeze(0)
+            kwargs["position_ids"] = torch.cat([pos_ids, extra_pos], dim=1)
+
+        return args, kwargs
 
 
     # ─────────────────────────────────────────
@@ -237,52 +262,32 @@ class ActorModel(nn.Module):
         self,
         image: Image.Image,
         instruction: str,
-        planner_action_token_ids: np.ndarray
+        planner_bin_indices: np.ndarray
     ) -> list:
         """
-        출력 형식: <action_N> 토큰 → 정수 (0~255)
-
-        수정 전 문제:
-            입력에 '→ <action_128>' 표시 → 모델이 이 형식을 출력에 복사
-            [ACTION] <action_N> 요구 → 모델이 템플릿 텍스트 그대로 출력
-
-        수정 후:
-            입력: 연속값만 표시 (→ <action_N> 제거)
-            출력: 7개 정수 (0~255) → 모델이 자연스럽게 생성 가능
-            예시: 명확한 입출력 예시 추가 → 형식 학습 가속
+        action은 hook으로 embedding 주입됨 (텍스트에 값 노출 불필요).
+        <action_N> 출력 형식과 예시만 표시 → cold start 형식 학습.
         """
-        bin_indices       = self.action_tokenizer.openvla_ids_to_bin_indices(planner_action_token_ids)
-        continuous_values = self.action_tokenizer.bin_indices_to_continuous(bin_indices)
-
-        # 연속값만 표시 (→ <action_N> 제거)
-        action_lines = "\n".join([
-            f"  {dim}: {val:+.3f}"
-            for dim, val in zip(ACTION_DIM_NAMES, continuous_values)
-        ])
-
-        # 플래너 bin 값 (예시 fallback 표시용)
-        planner_str = " ".join(str(b) for b in bin_indices)
-
+        planner_action_str = " ".join([f"<action_{b}>" for b in planner_bin_indices])
         messages = [{
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
                     f"Task: {instruction}\n\n"
-                    f"Proposed robot arm action (7-DOF):\n{action_lines}\n\n"
-                    "Values are in range [-1.0, +1.0]. Bin index 0=minimum(-1.0), "
-                    "128=neutral(0.0), 255=maximum(+1.0).\n\n"
-                    "You are a robot action critic.\n"
-                    "You have to evaluate the proposed action and correct it if necessary.\n"
-                    "Look at the image. Evaluate the action for this task.\n"
-                    "If correct, keep the same bin values. If not, explain why it's not correct and correct them.\n\n"
-                    "CRITICAL RULE: Keep your CRITIQUE extremely short (under 20 words).\n\n"
+                    "You are an expert robot action critic. A robot arm action has been proposed "
+                    "(provided as embedded action tokens right after this text).\n\n"
+                    "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
+                    "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
+                    "Evaluate the proposed action based on the image and the task. "
+                    "If it is correct, keep the same tokens. If it is wrong, correct them.\n"
+                    "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
                     "Reply EXACTLY in this format:\n"
-                    "CRITIQUE: [one sentence evaluation]\n"
-                    f"ACTION: [7 integers 0-255]\n\n"
-                    f"Example reply:\n"
-                    f"CRITIQUE: The z_move is too large for the current distance.\n"
-                    f"ACTION: {planner_str}"
+                    "CRITIQUE: [one short sentence evaluation]\n"
+                    "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
+                    "Example reply:\n"
+                    "CRITIQUE: The proposed z_move is too large for the distance.\n"
+                    f"[ACTION] {planner_action_str} [/ACTION]"
                 )}
             ]
         }]
@@ -292,9 +297,9 @@ class ActorModel(nn.Module):
         self,
         image: Image.Image,
         instruction: str,
-        planner_action_token_ids: np.ndarray
+        planner_bin_indices: np.ndarray
     ) -> dict:
-        messages = self._make_messages(image, instruction, planner_action_token_ids)
+        messages = self._make_messages(image, instruction, planner_bin_indices)
         return self.processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -305,34 +310,6 @@ class ActorModel(nn.Module):
 
 
     # ─────────────────────────────────────────
-    # input 준비 (action token 붙이기 제거)
-    # ─────────────────────────────────────────
-
-    def _prepare_inputs(self, inputs: dict) -> tuple:
-        """
-        action token ID를 input_ids에 붙이는 로직 제거.
-
-        제거 이유:
-            출력 형식이 <action_N> 토큰 → 정수로 바뀌었으므로
-            input_ids에 <action_N>을 붙일 필요 없음.
-            플래너 액션은 텍스트(연속값)로 이미 프롬프트에 포함됨.
-
-        반환: (input_ids, attention_mask, pixel_values, prompt_length)
-
-        [OOM 수정 참고] 이 함수는 generate()에서만 사용됨.
-        forward()는 pixel_values가 불필요하므로 이 함수를 호출하지 않고
-        input_ids / attention_mask만 직접 추출함.
-        """
-        input_ids      = inputs["input_ids"].to("cuda")
-        attention_mask = inputs["attention_mask"].to("cuda")
-        pixel_values   = inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
-        pixel_values.requires_grad_(False)
-        prompt_length  = input_ids.shape[1]
-
-        return input_ids, attention_mask, pixel_values, prompt_length
-
-
-    # ─────────────────────────────────────────
     # Forward (GRPO 학습)
     # ─────────────────────────────────────────
 
@@ -340,39 +317,56 @@ class ActorModel(nn.Module):
         self,
         cached_inputs: dict,
         new_tokens: torch.Tensor,
-        image_hidden_states: torch.Tensor   # [OOM 수정] 캐싱된 image features (CPU tensor)
+        planner_action_tokens: np.ndarray
     ) -> tuple:
         """
-        planner_action_tokens 파라미터 제거
-              (프롬프트에 이미 연속값으로 포함되어 있음)
+        Projection gradient 흐름:
+            embed_action_tokens() → action_embeds (Projection 통과)
+            → _action_embeds_buffer에 저장
+            → hook이 text_model 직전에 inputs_embeds에 concat
+            → loss → logits → LLM → action_embeds → Projection ← gradient
 
-        [OOM 수정] pixel_values 대신 image_hidden_states를 받아 vision encoder skip.
-            기존: _prepare_inputs()로 pixel_values GPU 이동 → vision encoder 재실행 → OOM
-            수정: input_ids/attention_mask만 추출, image_hidden_states 직접 주입
+        prompt_length = input_ids.shape[1] + 7
+            (hook이 action embeddings 7개를 삽입하므로 logit 슬라이싱 위치 보정)
 
-        반환: (logits, prompt_length)
+        :return: (logits, prompt_length)
         """
-        # [OOM 수정] pixel_values를 GPU로 옮기지 않음 → _prepare_inputs() 호출 제거
-        # input_ids와 attention_mask만 직접 추출
-        input_ids      = cached_inputs["input_ids"].to("cuda")
+        input_ids = cached_inputs["input_ids"].to("cuda")
         attention_mask = cached_inputs["attention_mask"].to("cuda")
-        prompt_length  = input_ids.shape[1]
 
-        # [OOM 수정] CPU에 저장된 image_hidden_states를 GPU로 이동
-        ihs_gpu = image_hidden_states.to("cuda")
+        # vision encoder frozen + detach → OOM 없음
+        pixel_values = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
+        pixel_values.requires_grad_(False)
+
+        # Projection으로 action_embeds 계산 (gradient 흐름 유지)
+        # → hook을 통해 LLM inputs에 삽입됨
+        action_embeds = self.action_tokenizer.embed_action_tokens(
+            torch.tensor(planner_action_tokens, dtype=torch.long)
+        )  # (1, 7, 960)
+
+        # hook이 삽입할 7개 토큰 위치를 포함한 prompt_length
+        prompt_length = input_ids.shape[1] + 7
 
         new_tokens_gpu = new_tokens.unsqueeze(0).to("cuda")
-        full_input_ids = torch.cat([input_ids, new_tokens_gpu], dim=1)
-        full_mask      = torch.cat([attention_mask, torch.ones_like(new_tokens_gpu)], dim=1)
+        full_ids  = torch.cat([input_ids, new_tokens_gpu], dim=1)
+        full_mask = torch.cat([
+            attention_mask,
+            torch.ones(1, new_tokens.shape[0], dtype=torch.long, device="cuda")
+        ], dim=1)
 
-        outputs = self.smol(
-            input_ids=full_input_ids,
-            attention_mask=full_mask,
-            pixel_values=None,               # [OOM 수정] vision encoder 호출 안 함
-            image_hidden_states=ihs_gpu,     # [OOM 수정] 캐싱된 features 직접 주입
-        )
+        try:
+            self._action_embeds_buffer[0] = action_embeds
+            # SmolVLM2 forward:
+            #   embed(input_ids) → inputs_merger(image 병합) → hook(action 삽입) → LLM
+            outputs = self.smol(
+                input_ids=full_ids,
+                attention_mask=full_mask,
+                pixel_values=pixel_values,
+            )
+        finally:
+            self._action_embeds_buffer[0] = None  # 예외 발생해도 버퍼 클리어
 
-        del input_ids, attention_mask, ihs_gpu, new_tokens_gpu, full_input_ids, full_mask
+        del input_ids, attention_mask, pixel_values, new_tokens_gpu, full_ids, full_mask
         torch.cuda.empty_cache()
 
         return outputs.logits, prompt_length
@@ -389,56 +383,76 @@ class ActorModel(nn.Module):
         instruction: str,
         max_new_tokens: int = None
     ) -> tuple:
+        """
+        hook 방식 추론:
+            pixel_values + input_ids → SmolVLM2 정상 처리
+            text_model 직전 hook → action_embeds 삽입
+            → <action_N> 토큰 생성
+
+        prompt_length: input_ids.shape[1] (hook 삽입 7개는 generated_ids에 포함 안 됨)
+            generate()는 input_ids 기준으로 슬라이싱하므로 hook의 7개는 투명함
+
+        반환: 7-tuple (critique, action_vector, action_token_ids,
+                        planner_action_tokens, cached_inputs,
+                        new_tokens(CPU), parsing_failed)
+        """
         if max_new_tokens is None:
             max_new_tokens = self.vram_cfg["max_new_tokens"]
 
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
         planner_bin_indices   = self.action_tokenizer.openvla_ids_to_bin_indices(planner_action_tokens)
 
-        cached_inputs = self._apply_chat_template(image, instruction, planner_action_tokens)
-        input_ids, attention_mask, pixel_values, input_length = \
-            self._prepare_inputs(cached_inputs)
+        cached_inputs = self._apply_chat_template(image, instruction, planner_bin_indices)
 
-        generated_ids = self.smol.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values,
-            max_new_tokens=max_new_tokens,
-            do_sample=True,
-            temperature=0.7,
-            pad_token_id=self.processor.tokenizer.eos_token_id
-        )
-        # [OOM 수정] generate() 완료 후 GPU 텐서 즉시 해제 (단편화 최소화)
+        input_ids      = cached_inputs["input_ids"].to("cuda")
+        attention_mask = cached_inputs["attention_mask"].to("cuda")
+        pixel_values   = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
+        pixel_values.requires_grad_(False)
+
+        # generate()는 no_grad이므로 gradient 없음
+        # forward()에서 동일한 embed_action_tokens()가 gradient와 함께 실행됨
+        action_embeds = self.action_tokenizer.embed_action_tokens(
+            torch.tensor(planner_action_tokens, dtype=torch.long)
+        )  # (1, 7, 960)
+
+        # generated_ids 슬라이싱용: hook의 7개는 token ID에 포함 안 됨
+        prompt_length = input_ids.shape[1]
+
+        try:
+            self._action_embeds_buffer[0] = action_embeds
+            generated_ids = self.smol.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=self.processor.tokenizer.eos_token_id
+            )
+        finally:
+            self._action_embeds_buffer[0] = None
+
         del input_ids, attention_mask, pixel_values
         torch.cuda.empty_cache()
 
-        new_tokens  = generated_ids[0][input_length:]
+        # hook 삽입 7개는 generated_ids에 없으므로 input_ids 길이 기준 슬라이싱
+        new_tokens  = generated_ids[0][prompt_length:]
         del generated_ids
         torch.cuda.empty_cache()
 
-        output_text = self.processor.decode(new_tokens, skip_special_tokens=True)
+        output_text = self.processor.decode(new_tokens, skip_special_tokens=False)
         print("=" * 50)
-        print(f"[generate] {output_text[:30]}")
+        print(f"[generate] {output_text[:80]}")
 
         critique = self._parse_critique(output_text)
-
-        # [*수정*] planner_bin_indices fallback 전달 제거 및 parsing_failed 플래그 수신
         action_vector, action_token_ids, parsing_failed = self._parse_and_decode_action(
-            output_text
+            new_tokens
         )
-
         self._log_modification(planner_bin_indices, action_token_ids)
 
-        # [OOM 수정] vision encoder 1회 실행 → image_hidden_states CPU 캐싱
-        # cached_inputs["pixel_values"]는 CPU 텐서이므로 generate() 이후에도 사용 가능
-        # trajectory에 저장해 forward()에서 재사용 → 학습 시 vision encoder 재실행 방지
-        image_hidden_states = self.extract_image_features(cached_inputs)
-
-        # [*수정*] 반환 튜플 마지막에 parsing_failed 추가
-        # [OOM 수정] 반환 튜플 맨 끝에 image_hidden_states 추가 (8번째 값)
         return (critique, action_vector, action_token_ids,
                 planner_action_tokens, cached_inputs,
-                new_tokens.cpu(), parsing_failed, image_hidden_states)
+                new_tokens.cpu(), parsing_failed)
 
 
     # ─────────────────────────────────────────
@@ -446,30 +460,18 @@ class ActorModel(nn.Module):
     # ─────────────────────────────────────────
 
     def _parse_critique(self, text: str) -> str:
-        """CRITIQUE: ... 또는 [CRITIQUE]...[/CRITIQUE] 모두 허용"""
         try:
-            # [CRITIQUE]...[/CRITIQUE] 형식
             m = re.search(r"\[CRITIQUE\](.*?)(\[\/CRITIQUE\]|$)", text, re.DOTALL | re.IGNORECASE)
-            if m:
-                return m.group(1).strip()
-            # CRITIQUE: ... 형식
-            m = re.search(r"CRITIQUE:\s*(.+?)(?=\nACTION:|$)", text, re.DOTALL | re.IGNORECASE)
-            if m:
-                return m.group(1).strip()
+            if m: return m.group(1).strip()
+            m = re.search(r"CRITIQUE:\s*(.+?)(?=\[ACTION\]|$)", text, re.DOTALL | re.IGNORECASE)
+            if m: return m.group(1).strip()
         except Exception:
             pass
         return ""
 
-    def _parse_and_decode_action(
-        self,
-        output_text: str
-    ) -> tuple:
-        """
-        [*수정*] 정수 출력 파서 (Reward Hacking 방지를 위해 fallback 제거 및 엄격한 규격 파싱 적용)
-        """
+    def _parse_and_decode_action(self, new_tokens: torch.Tensor) -> tuple:
+        """token ID 범위로 <action_N> 탐지."""
         smol_action_start = len(self.processor.tokenizer) - 256
-
-        # [*수정*] 파싱 완전 실패 시 사용할 안전한 중립값(128) 생성 (로봇 급발진 방지)
         fallback_bins = np.full(7, 128)
 
         def bins_to_result(bin_list, failed=False):
@@ -477,59 +479,31 @@ class ActorModel(nn.Module):
             token_ids = arr + smol_action_start
             return self.action_tokenizer.decode_token_ids_to_actions(token_ids), token_ids, failed
 
-        try:
-            # ① ACTION: 뒤 정수 파싱 (가장 엄격한 형식)
-            action_match = re.search(
-                r"ACTION:\s*([\d\s]+)",
-                output_text, re.IGNORECASE
-            )
-            if action_match:
-                nums = [
-                    int(n) for n in re.findall(r"\b(\d{1,3})\b", action_match.group(1))
-                    if 0 <= int(n) <= 255
-                ]
-                if len(nums) == 7: # [*수정*] 정확히 7개일 때만 허용
-                    return bins_to_result(nums, failed=False)
+        new_tokens_np = new_tokens.cpu().numpy()
 
-            # ② [ACTION]...[/ACTION] 사이 정수 파싱
-            action_tag = re.search(
-                r"\[ACTION\](.*?)(\[\/ACTION\]|$)",
-                output_text, re.DOTALL | re.IGNORECASE
-            )
-            if action_tag:
-                nums = [
-                    int(n) for n in re.findall(r"\b(\d{1,3})\b", action_tag.group(1))
-                    if 0 <= int(n) <= 255
-                ]
-                if len(nums) == 7: # [*수정*] 정확히 7개일 때만 허용
-                    return bins_to_result(nums, failed=False)
+        # ① token ID 범위로 직접 탐지
+        action_mask = (
+            (new_tokens_np >= smol_action_start) &
+            (new_tokens_np < smol_action_start + 256)
+        )
+        action_ids_found = new_tokens_np[action_mask]
+        if len(action_ids_found) >= 7:
+            return bins_to_result(action_ids_found[:7] - smol_action_start, failed=False)
 
-            # ③ 전체 출력에서 유효 정수 추출 (가장 lenient)
-            all_nums = [
-                int(n) for n in re.findall(r"\b(\d{1,3})\b", output_text)
-                if 0 <= int(n) <= 255
-            ]
+        # ② 텍스트 fallback
+        output_text = self.processor.decode(new_tokens, skip_special_tokens=False)
+        m = re.search(r"\[ACTION\](.*?)(\[\/ACTION\]|$)", output_text, re.DOTALL | re.IGNORECASE)
+        if m:
+            indices = re.findall(r"<action_(\d+)>", m.group(1))
+            if len(indices) == 7:
+                return bins_to_result([int(i) for i in indices], failed=False)
 
-            if len(all_nums) == 7: # [*수정*] 정확히 7개일 때만 허용
-                return bins_to_result(all_nums, failed=False)
-
-            # [*수정*] ④ 일부만 파싱됐을 때 나머지를 플래너 값으로 채우는 기존 우회 로직 삭제
-
-        except Exception as e:
-            print(f"[파싱 오류] {e}")
-
-        # [*수정*] ⑤ 규격에 맞지 않거나 파싱 완전 실패 시 -> 실패 플래그(True)와 함께 중립값 반환
-        print("[파싱 실패] 규격 미달 또는 파싱 불가 -> 페널티 부여 대상")
+        print("[파싱 실패] <action_N> 미생성 → cold start 페널티 대상")
         return bins_to_result(fallback_bins, failed=True)
 
-    def _log_modification(
-        self,
-        planner_bin_indices: np.ndarray,
-        actor_token_ids: np.ndarray
-    ) -> None:
+    def _log_modification(self, planner_bin_indices, actor_token_ids):
         smol_action_start = len(self.processor.tokenizer) - 256
         actor_bins = actor_token_ids - smol_action_start
-
         if np.array_equal(planner_bin_indices, actor_bins):
             print("[수정 여부] 유지됨")
         else:

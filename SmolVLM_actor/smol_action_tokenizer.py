@@ -1,3 +1,33 @@
+"""
+smol_action_tokenizer.py
+
+Actor 모델의 action token 처리 담당 클래스.
+
+[설계 구조 - Paradigm A 복원]
+    OpenVLA token IDs
+        → openvla_embedding (frozen, 4096차원)   ← OpenVLA가 학습한 action 의미론
+        → Projection layer  (4096→960, 학습가능) ← GRPO로 번역 능력 학습
+        → action_embeds (7, 960)                 ← SmolVLM2 LLM 입력에 직접 concat
+
+    [초기화 - 1회]
+        add_tokenizer_vocab()      : SmolVLM2 vocab에 <action_0>~<action_255> 추가
+        resize_embeddings()        : SmolVLM2 임베딩 테이블 확장
+        init_action_embeddings()   : 추가된 256개 토큰을 OpenVLA 임베딩으로 초기화
+                                     (OpenVLA embedding → Projection → SmolVLM2 embedding 공간)
+                                     목적: 랜덤 초기화 대신 로봇 동작 의미론이 담긴 시작점 제공
+
+    [매 스텝 - Paradigm A 핵심]
+        embed_action_tokens()         : OpenVLA token ID → openvla_embedding → Projection → (1,7,960)
+                                        매 forward마다 호출, Projection이 GRPO로 학습됨
+
+    [매 스텝 - 프롬프트 구성용]
+        openvla_ids_to_bin_indices()  : OpenVLA raw token ID → bin index (0~255)
+        bin_indices_to_continuous()   : bin index → 연속값 (-1~+1)
+
+    [출력 파싱]
+        decode_token_ids_to_actions() : SmolVLM2 출력 <action_N> token ID → 연속값 복원
+"""
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -5,29 +35,6 @@ from smol_projection_layer import Projection
 
 
 class ActorActionTokenizer:
-    """
-    Actor 모델의 action token 처리 담당 클래스.
-
-    역할 (Paradigm B - token ID 기반):
-        [초기화 - 1회]
-            add_tokenizer_vocab()      : SmolVLM2 vocab에 <action_0>~<action_255> 추가
-            resize_embeddings()        : SmolVLM2 임베딩 테이블 확장
-            init_action_embeddings()   : 추가된 256개 토큰을 OpenVLA 임베딩으로 초기화
-                                         (OpenVLA embedding → Projection → SmolVLM2 embedding 공간)
-                                         목적: 랜덤 초기화 대신 로봇 동작 의미론이 담긴 시작점 제공
-
-        [매 스텝 - 프롬프트 구성용]
-            openvla_ids_to_bin_indices()  : OpenVLA raw token ID → bin index (0~255)
-            bin_indices_to_continuous()   : bin index → 연속값 (-1~+1), 프롬프트 텍스트 표시용
-
-        [출력 파싱]
-            decode_token_ids_to_actions() : SmolVLM2 출력 action token ID → 연속값 복원
-
-    ※ 제거된 함수:
-        embed_action_tokens() - Paradigm A dead code (inputs_embeds 방식, 미사용)
-        forward()             - Paradigm A dead code (임베딩 concat, 미사용)
-        실제 구현은 input_ids에 action token ID를 이어붙이는 방식 (Paradigm B)
-    """
 
     def __init__(self, processor, smol_model, projection, OPENVLA_VOCAB_SIZE=32000):
         self.bins        = np.linspace(-1, 1, 256)
@@ -40,9 +47,9 @@ class ActorActionTokenizer:
         self.OPENVLA_VOCAB_SIZE = OPENVLA_VOCAB_SIZE
 
         # ── OpenVLA 임베딩 테이블 로드 (frozen) ──────────────────────────────
-        # init_action_embeddings()에서 1회만 사용.
-        # 역할: OpenVLA가 학습한 action 의미론(semantics)을
-        #        Projection을 통해 SmolVLM2 임베딩 공간으로 이식하는 '번역기'
+        # Paradigm A의 핵심: OpenVLA가 학습한 action 의미론이 담긴 (256, 4096) 벡터들
+        # embed_action_tokens()에서 매 스텝 호출됨
+        # Projection과 함께 "OpenVLA action → SmolVLM2 임베딩 공간" 번역을 담당
         action_embed_weights = torch.load(
             "assets/openvla_action_embeddings.pt",
             weights_only=False
@@ -50,7 +57,7 @@ class ActorActionTokenizer:
         if action_embed_weights.shape[0] != 256:
             action_embed_weights = action_embed_weights[-256:]
 
-        # shape: (256, 4096), freeze=True → 초기화 후 gradient 없음
+        # shape: (256, 4096), freeze=True → OpenVLA 의미론 고정, gradient 없음
         self.openvla_embedding = nn.Embedding.from_pretrained(
             action_embed_weights,
             freeze=True
@@ -67,7 +74,11 @@ class ActorActionTokenizer:
         <action_0> ~ <action_255> special token 추가.
 
         SmolVLM2 기본 vocab_size: 49152
-        추가 후: 49152 + 256 = 49408
+        추가 후: 49152 + 256 = 49408 (실제로는 49280 + 256 = 49536일 수도 있음)
+        → len(self.processor.tokenizer)로 항상 동적으로 계산
+
+        이 토큰들은 SmolVLM2의 출력 어휘로 사용됨:
+            모델이 [ACTION] 태그 안에 <action_N> 토큰들을 생성
         """
         action_tokens = [f"<action_{i}>" for i in range(n_bins)]
         num_added = self.processor.tokenizer.add_special_tokens(
@@ -91,7 +102,7 @@ class ActorActionTokenizer:
         추가된 action token 256개를 OpenVLA 임베딩으로 초기화 (1회).
 
         흐름:
-            OpenVLA embedding (256, 4096)  [frozen openvla_embedding table에서]
+            OpenVLA embedding (256, 4096)
             → Projection Layer (4096 → 960)
             → SmolVLM2 임베딩 테이블 마지막 256행 교체
 
@@ -99,7 +110,9 @@ class ActorActionTokenizer:
             <action_128> 토큰은 처음부터 "중립적 동작(~0.0)"에 해당하는
             의미있는 벡터로 초기화됨 → 랜덤 초기화 대비 GRPO 수렴 가속
 
-        이후 GRPO 학습을 통해 이 임베딩들이 계속 업데이트됨.
+        이후:
+            Paradigm A에서는 embed_action_tokens()가 매 스텝 fresh 임베딩 생성
+            이 초기화는 <action_N> 토큰이 SmolVLM2 출력에 나타날 때의 임베딩 품질에 기여
         """
         if openvla_embed_weights.shape[0] != 256:
             openvla_embed_weights = openvla_embed_weights[-256:]
@@ -124,6 +137,43 @@ class ActorActionTokenizer:
         self.resize_embeddings()
         self.init_action_embeddings(openvla_embed_weights)
         print("[setup] ActorActionTokenizer 초기화 완료!")
+
+
+    # ─────────────────────────────────────────
+    # [Paradigm A 핵심] 매 스텝 임베딩 변환
+    # ─────────────────────────────────────────
+
+    def embed_action_tokens(self, action_token_ids: torch.Tensor) -> torch.Tensor:
+        """
+        [Paradigm A 핵심] OpenVLA action token ID → SmolVLM2 입력 임베딩 변환.
+
+        흐름:
+            OpenVLA raw token IDs (31744~31999)
+            → bin_indices (0~255): vocab_size - token_id
+            → openvla_embedding (frozen, 256, 4096): 로봇 동작 의미론 담긴 벡터
+            → Projection layer (4096→960, 학습가능): SmolVLM2 공간으로 번역
+            → unsqueeze(0) → (1, 7, 960)
+
+        학습 중 gradient 흐름:
+            GRPO loss → logits → transformer → inputs_embeds → action_embeds → Projection
+            → Projection이 "OpenVLA 공간 → SmolVLM2 공간" 번역을 점점 잘 배움
+
+        :param action_token_ids: shape (7,), OpenVLA raw token IDs
+        :return: shape (1, 7, 960), bfloat16
+        """
+        # raw OpenVLA token ID → bin index (0~255)
+        bin_indices = self.OPENVLA_VOCAB_SIZE - action_token_ids
+        bin_indices = torch.clamp(bin_indices, min=0, max=255)
+
+        # OpenVLA 임베딩 테이블에서 lookup (frozen): (7, 4096)
+        openvla_embeds = self.openvla_embedding(
+            bin_indices.clone().detach().to(dtype=torch.long).to("cuda")
+        )
+
+        # Projection: (7, 4096) → (7, 960), 학습 가능
+        smol_embeds = self.projection(openvla_embeds.float())
+
+        return smol_embeds.unsqueeze(0).to(torch.bfloat16)  # (1, 7, 960)
 
 
     # ─────────────────────────────────────────
@@ -154,9 +204,6 @@ class ActorActionTokenizer:
         """
         bin index → 연속값 (-1.0 ~ +1.0) 변환.
 
-        프롬프트 텍스트에 실제 값을 표시하여 모델이
-        "이 값이 왜 잘못됐는지" 텍스트로 추론하게 함.
-
         :param bin_indices: shape (7,), 0~255
         :return: shape (7,), 연속값 action vector
         """
@@ -165,16 +212,16 @@ class ActorActionTokenizer:
 
     def decode_token_ids_to_actions(self, action_token_ids: np.ndarray) -> np.ndarray:
         """
-        SmolVLM2 출력 action token ID → 연속값 복원.
+        SmolVLM2 출력 <action_N> token ID → 연속값 복원.
 
         SmolVLM2 action token 범위:
-            vocab_size after add: 49408
-            action token start:   49408 - 256 = 49152
-            <action_0>  → ID 49152 → bin_index 0  → bin_centers[0]  ≈ -0.992
-            <action_128>→ ID 49280 → bin_index 128 → bin_centers[128] ≈ 0.000
-            <action_255>→ ID 49407 → bin_index 255 → bin_centers[254] ≈ +0.992
+            vocab_size after add: 49536 (또는 49408, 동적으로 계산)
+            action token start:   len(tokenizer) - 256
+            <action_0>  → ID smol_action_start+0   → bin_index 0   → bin_centers[0]  ≈ -0.992
+            <action_128>→ ID smol_action_start+128  → bin_index 128 → bin_centers[128] ≈ 0.000
+            <action_255>→ ID smol_action_start+255  → bin_index 255 → bin_centers[254] ≈ +0.992
 
-        :param action_token_ids: shape (7,), SmolVLM2 출력 token IDs (49152~49407)
+        :param action_token_ids: shape (7,), SmolVLM2 출력 token IDs
         :return: shape (7,), 연속값 action vector (-1~+1)
         """
         smol_action_token_start = len(self.processor.tokenizer) - 256
