@@ -16,6 +16,17 @@ Actor Model (SmolVLM2-500M, 출력 형식 수정 버전)
        (최소한 플래너 수준의 행동 보장 → 보상 신호 유지)
     ④ max_new_tokens 증가 (70 → 100/150)
        응답이 잘려서 ACTION 태그 미생성 방지
+
+[OOM 수정] Vision Feature Caching
+문제: actor.forward() 호출마다 pixel_values → Vision Encoder 재실행
+      rollout 20회 + 학습 20회 = 40회 vision encoder 실행
+      → query @ key 행렬 연산에서 CUDA driver OOM 발생
+
+해결:
+    extract_image_features(): generate() 내에서 vision encoder를 1회만 실행
+    → image_hidden_states를 CPU 텐서로 캐싱 (~0.15MB/step)
+    forward(): image_hidden_states를 직접 주입, pixel_values/vision encoder 완전 skip
+    → 학습 시 vision encoder 실행 횟수: 20회 → 0회
 """
 import os
 import sys
@@ -55,11 +66,11 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=2, max_new_tokens=150, lora_r=4,  lora_alpha=8, use_8bit_adam=True, label="12GB")
+        cfg = dict(group_size=2, max_new_tokens=30, lora_r=4,  lora_alpha=8, use_8bit_adam=True, label="12GB")
     elif total_gb >= 7:
-        cfg = dict(group_size=2, max_new_tokens=150, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
+        cfg = dict(group_size=2, max_new_tokens=30, lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="8GB")
     else:
-        cfg = dict(group_size=1, max_new_tokens=30,  lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="6GB")
+        cfg = dict(group_size=2, max_new_tokens=30,  lora_r=4,  lora_alpha=8,  use_8bit_adam=True,  label="6GB")
 
     print(f"[VRAM 설정] {cfg['label']}: group={cfg['group_size']}, "
           f"max_new={cfg['max_new_tokens']}, lora_r={cfg['lora_r']}")
@@ -125,6 +136,13 @@ class ActorModel(nn.Module):
 
         # ── 6. LoRA + sparse embedding hook ─────────
         self.smol = prepare_model_for_kbit_training(self.smol, use_gradient_checkpointing=True)
+
+        # [*수정*] Vision 인코더 완벽 차단 (VRAM 폭발 원천 봉쇄)
+        # LLM 부분(비판 텍스트 및 액션 토큰 생성)만 학습에 참여하도록 비전 파라미터를 강제로 얼림
+        for name, param in self.smol.named_parameters():
+            if "vision" in name.lower() or "visual" in name.lower():
+                param.requires_grad_(False)
+
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=self.vram_cfg["lora_r"],
@@ -154,6 +172,44 @@ class ActorModel(nn.Module):
 
         embed_layer.weight.register_hook(_sparse_hook)
         print(f"[sparse hook] action embedding 행({smol_action_start}~)만 학습")
+
+
+    # ─────────────────────────────────────────
+    # [OOM 수정] Image Feature 추출 및 캐싱
+    # ─────────────────────────────────────────
+
+    def extract_image_features(self, cached_inputs: dict) -> torch.Tensor:
+        """
+        [OOM 수정] Vision encoder를 1회 실행해 image_hidden_states를 CPU 텐서로 반환.
+
+        generate()에서 1회 호출 → CPU에 저장 → forward()에서 재사용
+        이를 통해 학습 forward() 시 vision encoder 재실행을 완전히 차단.
+
+        PEFT 모델 접근 경로:
+            self.smol                              (PeftModelForCausalLM)
+              .base_model                          (LoraModel)
+                .model                             (SmolVLMForConditionalGeneration)
+                  .model                           (SmolVLMModel)
+                    .get_image_features(pv)  <- 여기 호출
+
+        :param cached_inputs: _apply_chat_template() 반환값 (pixel_values는 CPU 텐서)
+        :return: image_hidden_states, CPU tensor, shape (1, n_image_tokens, hidden_size)
+                 에피소드당 ~0.15MB로 매우 작음
+        """
+        with torch.no_grad():
+            # cached_inputs["pixel_values"]는 CPU → GPU로 이동
+            pv = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16)
+
+            # PEFT 래퍼를 통과해 SmolVLMModel의 get_image_features() 직접 호출
+            # SmolVLMModel은 vision encoder + pixel shuffle connector를 포함
+            smolvlm_inner = self.smol.base_model.model.model  # SmolVLMModel
+            features = smolvlm_inner.get_image_features(pixel_values=pv)
+
+            del pv
+            torch.cuda.empty_cache()
+
+        # CPU로 이동해서 반환: 학습 시 GPU 메모리를 점유하지 않음
+        return features.cpu()
 
 
     # ─────────────────────────────────────────
@@ -217,6 +273,7 @@ class ActorModel(nn.Module):
                     "You have to evaluate the proposed action and correct it if necessary.\n"
                     "Look at the image. Evaluate the action for this task.\n"
                     "If correct, keep the same bin values. If not, explain why it's not correct and correct them.\n\n"
+                    "CRITICAL RULE: Keep your CRITIQUE extremely short (under 20 words).\n\n"
                     "Reply EXACTLY in this format:\n"
                     "CRITIQUE: [one sentence evaluation]\n"
                     f"ACTION: [7 integers 0-255]\n\n"
@@ -258,10 +315,15 @@ class ActorModel(nn.Module):
             플래너 액션은 텍스트(연속값)로 이미 프롬프트에 포함됨.
 
         반환: (input_ids, attention_mask, pixel_values, prompt_length)
+
+        [OOM 수정 참고] 이 함수는 generate()에서만 사용됨.
+        forward()는 pixel_values가 불필요하므로 이 함수를 호출하지 않고
+        input_ids / attention_mask만 직접 추출함.
         """
         input_ids      = inputs["input_ids"].to("cuda")
         attention_mask = inputs["attention_mask"].to("cuda")
-        pixel_values   = inputs["pixel_values"].to("cuda")
+        pixel_values   = inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
+        pixel_values.requires_grad_(False)
         prompt_length  = input_ids.shape[1]
 
         return input_ids, attention_mask, pixel_values, prompt_length
@@ -274,16 +336,27 @@ class ActorModel(nn.Module):
     def forward(
         self,
         cached_inputs: dict,
-        new_tokens: torch.Tensor
+        new_tokens: torch.Tensor,
+        image_hidden_states: torch.Tensor   # [OOM 수정] 캐싱된 image features (CPU tensor)
     ) -> tuple:
         """
         planner_action_tokens 파라미터 제거
               (프롬프트에 이미 연속값으로 포함되어 있음)
 
+        [OOM 수정] pixel_values 대신 image_hidden_states를 받아 vision encoder skip.
+            기존: _prepare_inputs()로 pixel_values GPU 이동 → vision encoder 재실행 → OOM
+            수정: input_ids/attention_mask만 추출, image_hidden_states 직접 주입
+
         반환: (logits, prompt_length)
         """
-        input_ids, attention_mask, pixel_values, prompt_length = \
-            self._prepare_inputs(cached_inputs)
+        # [OOM 수정] pixel_values를 GPU로 옮기지 않음 → _prepare_inputs() 호출 제거
+        # input_ids와 attention_mask만 직접 추출
+        input_ids      = cached_inputs["input_ids"].to("cuda")
+        attention_mask = cached_inputs["attention_mask"].to("cuda")
+        prompt_length  = input_ids.shape[1]
+
+        # [OOM 수정] CPU에 저장된 image_hidden_states를 GPU로 이동
+        ihs_gpu = image_hidden_states.to("cuda")
 
         new_tokens_gpu = new_tokens.unsqueeze(0).to("cuda")
         full_input_ids = torch.cat([input_ids, new_tokens_gpu], dim=1)
@@ -292,10 +365,11 @@ class ActorModel(nn.Module):
         outputs = self.smol(
             input_ids=full_input_ids,
             attention_mask=full_mask,
-            pixel_values=pixel_values,
+            pixel_values=None,               # [OOM 수정] vision encoder 호출 안 함
+            image_hidden_states=ihs_gpu,     # [OOM 수정] 캐싱된 features 직접 주입
         )
 
-        del input_ids, attention_mask, pixel_values, new_tokens_gpu, full_input_ids
+        del input_ids, attention_mask, ihs_gpu, new_tokens_gpu, full_input_ids, full_mask
         torch.cuda.empty_cache()
 
         return outputs.logits, prompt_length
@@ -331,13 +405,17 @@ class ActorModel(nn.Module):
             temperature=0.7,
             pad_token_id=self.processor.tokenizer.eos_token_id
         )
+        # [OOM 수정] generate() 완료 후 GPU 텐서 즉시 해제 (단편화 최소화)
         del input_ids, attention_mask, pixel_values
         torch.cuda.empty_cache()
 
         new_tokens  = generated_ids[0][input_length:]
+        del generated_ids
+        torch.cuda.empty_cache()
+
         output_text = self.processor.decode(new_tokens, skip_special_tokens=True)
         print("=" * 50)
-        print(f"[generate] {output_text[:50]}")
+        print(f"[generate] {output_text[:30]}")
 
         critique = self._parse_critique(output_text)
 
@@ -348,8 +426,16 @@ class ActorModel(nn.Module):
 
         self._log_modification(planner_bin_indices, action_token_ids)
 
+        # [OOM 수정] vision encoder 1회 실행 → image_hidden_states CPU 캐싱
+        # cached_inputs["pixel_values"]는 CPU 텐서이므로 generate() 이후에도 사용 가능
+        # trajectory에 저장해 forward()에서 재사용 → 학습 시 vision encoder 재실행 방지
+        image_hidden_states = self.extract_image_features(cached_inputs)
+
         # [*수정*] 반환 튜플 마지막에 parsing_failed 추가
-        return critique, action_vector, action_token_ids, planner_action_tokens, cached_inputs, new_tokens.cpu(), parsing_failed
+        # [OOM 수정] 반환 튜플 맨 끝에 image_hidden_states 추가 (8번째 값)
+        return (critique, action_vector, action_token_ids,
+                planner_action_tokens, cached_inputs,
+                new_tokens.cpu(), parsing_failed, image_hidden_states)
 
 
     # ─────────────────────────────────────────
@@ -379,7 +465,7 @@ class ActorModel(nn.Module):
         [*수정*] 정수 출력 파서 (Reward Hacking 방지를 위해 fallback 제거 및 엄격한 규격 파싱 적용)
         """
         smol_action_start = len(self.processor.tokenizer) - 256
-        
+
         # [*수정*] 파싱 완전 실패 시 사용할 안전한 중립값(128) 생성 (로봇 급발진 방지)
         fallback_bins = np.full(7, 128)
 

@@ -17,10 +17,28 @@ GRPO 학습 스크립트
     파싱 실패 시 행동:
         기존: zeros → 항상 실패 → 보상 없음
         수정: 플래너 값 → 최소한 OpenVLA 수준 행동 유지
+
+[OOM 수정] Vision Feature Caching 대응
+    collect_rollout(): generate()의 8번째 반환값 image_hidden_states 언팩 및 저장
+    compute_grpo_loss_from_trajectories():
+        - rollout → 학습 전환 시 torch.cuda.synchronize() + empty_cache() 강제 수행
+        - actor.forward()에 image_hidden_states 전달 → vision encoder 재실행 방지
+
+실행:
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train/smol_train.py
 """
 
 import sys
 import os
+
+# [OOM 수정] 메모리 단편화 방지 설정
+# expandable_segments: 조각난 free block 대신 OS에서 새 세그먼트 직접 할당
+# max_split_size_mb: 큰 블록을 작은 조각으로 분리하지 않음
+os.environ.setdefault(
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "expandable_segments:True,max_split_size_mb:256"
+)
+
 sys.path.append(os.path.join(os.path.dirname(__file__), "../SmolVLM_actor"))
 
 import torch
@@ -37,9 +55,9 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # ─────────────────────────────────────────
 
 TASK_SUITE      = "libero_10"
-TASK_IDS        = [0, 1, 2]
-NUM_EPISODES    = 60
-MAX_STEPS       = 10
+TASK_IDS        = [0]
+NUM_EPISODES    = 50
+MAX_STEPS       = 30
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints"
@@ -136,6 +154,19 @@ def make_scheduler(optimizer, num_episodes: int):
 
 
 # ─────────────────────────────────────────
+# [OOM 수정] VRAM 상태 출력 헬퍼
+# ─────────────────────────────────────────
+
+def log_vram(tag: str = ""):
+    """allocated: 실제 사용 중 / reserved: PyTorch 캐시 보유 / peak: 최대 사용량"""
+    alloc  = torch.cuda.memory_allocated()     / 1024**2
+    reserv = torch.cuda.memory_reserved()      / 1024**2
+    peak   = torch.cuda.max_memory_allocated() / 1024**2
+    print(f"  [VRAM{' '+tag if tag else ''}] "
+          f"alloc={alloc:.0f}MB reserved={reserv:.0f}MB peak={peak:.0f}MB")
+
+
+# ─────────────────────────────────────────
 # rollout 수집
 # ─────────────────────────────────────────
 
@@ -161,8 +192,10 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
 
             with torch.no_grad():
                 # [*수정*] parsing_failed 상태값을 튜플 맨 뒤에서 추가로 받음
-                critique, action_vector, action_token_ids, \
-                planner_tokens, cached_inputs, new_tokens, parsing_failed = actor.generate(
+                # [OOM 수정] image_hidden_states를 8번째 값으로 추가 언팩
+                (critique, action_vector, action_token_ids,
+                 planner_tokens, cached_inputs,
+                 new_tokens, parsing_failed, image_hidden_states) = actor.generate(
                     image=image, instruction=instruction
                 )
 
@@ -171,7 +204,7 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
             print("=" * 50)
 
             obs, _, done, info = env.step(action_vector)
-            
+
             # [*수정*] 보상 함수로 보내기 직전 info 변수에 파싱 결과를 안전하게 주입
             info["parsing_failed"] = parsing_failed
             reward = reward_fn(action_vector, info)
@@ -179,6 +212,7 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
             group_traj.append({
                 "cached_inputs":         cached_inputs,      # 프롬프트 (CPU)
                 "new_tokens":            new_tokens,         # 생성 토큰 (CPU)
+                "image_hidden_states":   image_hidden_states, # [OOM 수정] 캐싱된 image features (CPU)
                 "planner_action_tokens": planner_tokens,     # 플래너 raw IDs
                 "action_token_ids":      torch.tensor(action_token_ids, dtype=torch.long),
                 "action_vector":         action_vector,
@@ -217,6 +251,14 @@ def compute_grpo_loss_from_trajectories(
         action 결과(보상)가 학습의 핵심이므로 action 부분에 더 강한 gradient
         critique 텍스트도 함께 학습 → 해석 가능성 유지
     """
+    # [OOM 수정] rollout에서 쌓인 단편화 residual 정리 후 학습 시작
+    # rollout 20회의 generate()가 남긴 조각난 메모리 블록을 정리해서
+    # backward() 시 280MB 연속 블록 확보를 보장
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()  # peak 추적 초기화 (에피소드별 peak 측정용)
+    log_vram("학습 시작 전")              # [OOM 수정] 학습 시작 시점 VRAM 상태 확인
+
     rewards = torch.tensor(
         [traj[-1]["reward"] for traj in trajectories], dtype=torch.float32
     )
@@ -238,9 +280,11 @@ def compute_grpo_loss_from_trajectories(
             N = new_tokens.shape[0]
 
             # ── forward ────────────────────────────────────────────
+            # [OOM 수정] image_hidden_states 전달 → vision encoder 재실행 방지
             logits, prompt_length = actor.forward(
                 cached_inputs=step_data["cached_inputs"],
-                new_tokens=new_tokens
+                new_tokens=new_tokens,
+                image_hidden_states=step_data["image_hidden_states"]  # [OOM 수정] 추가
             )
 
             # ── logit 슬라이싱 ──────────────────────────────────────
@@ -285,6 +329,7 @@ def compute_grpo_loss_from_trajectories(
             del logits, gen_logits, log_prob, per_token_logp, weights, step_loss, new_tokens
             torch.cuda.empty_cache()
 
+    log_vram("학습 종료 후")  # [OOM 수정] 학습 후 VRAM 상태 확인 (누수 감지용)
     return total_loss / max(total_steps, 1)
 
 
@@ -354,7 +399,7 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
             print(f"  체크포인트 저장: {save_dir}")
 
     env.close()
-    
+
     stats = {
         "task_id":      task_id,
         "task_name":    task_name,
@@ -374,11 +419,16 @@ def train_on_task(actor: ActorModel, task_id: int) -> dict:
 # ─────────────────────────────────────────
 
 def main():
+    # [OOM 수정] CUDA 설정값 확인 출력
+    print(f"[CUDA 설정] PYTORCH_CUDA_ALLOC_CONF = "
+          f"{os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '미설정')}")
     print("Actor 모델 초기화 중...")
     print("Planner 서버(openvla_inference_code.py)가 실행 중이어야 합니다.")
 
     actor = ActorModel()
     actor.smol.gradient_checkpointing_enable()
+
+    log_vram("모델 로드 후")  # [OOM 수정] 초기 VRAM 기준점 출력
 
     all_stats = []
     for task_id in TASK_IDS:
