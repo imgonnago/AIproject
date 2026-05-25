@@ -205,6 +205,9 @@ class ActorModel(nn.Module):
             smolvlm_inner = self.smol.base_model.model.model  # SmolVLMModel
             features = smolvlm_inner.get_image_features(pixel_values=pv)
 
+            if not isinstance(features, torch.Tensor):
+                features = features.last_hidden_state
+
             del pv
             torch.cuda.empty_cache()
 
