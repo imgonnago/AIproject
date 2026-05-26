@@ -35,11 +35,11 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 
 TASK_SUITE      = "libero_10"
 TASK_IDS        = [0]
-NUM_EPISODES    = 50
-MAX_STEPS       = 2
+NUM_EPISODES    = 60
+MAX_STEPS       = 10
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
-SAVE_PATH       = "checkpoints"
+SAVE_PATH       = "checkpoints/smol_grpo"
 
 LEARNING_RATE   = 2e-4
 LR_MIN          = 1e-6

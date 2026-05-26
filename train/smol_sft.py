@@ -92,7 +92,8 @@ def make_sft_example(actor: ActorModel):
     # 타겟 출력 구성
     critique_text = CRITIQUE_TEMPLATES[np.random.randint(len(CRITIQUE_TEMPLATES))]
     action_str    = " ".join([f"<action_{b}>" for b in planner_bin_indices])
-    target_text   = f"CRITIQUE: {critique_text}\n[ACTION] {action_str} [/ACTION]"
+    eos_token = actor.processor.tokenizer.eos_token
+    target_text = f"CRITIQUE: {critique_text}\n\n[ACTION] {action_str} [/ACTION]{eos_token}"
 
     # 텍스트 전용 프롬프트 (image 타입 없음 → pixel_values 생성 안 됨)
     messages = [{
@@ -100,19 +101,18 @@ def make_sft_example(actor: ActorModel):
             "content": [
                 {"type": "text", "text": (
                     f"Task: {instruction}\n\n"
-                    "You are an expert robot action critic. A robot arm action has been proposed "
-                    "(provided as embedded action tokens right after this text).\n\n"
+                    f"Planner action tokens: {action_str}\n\n"
+                    "You are an expert robot action critic. Your job is to critically evaluate the action inferred by the planner.\n"
+                    "Judge the situation by looking at the task, the image, and the planner action tokens above.\n"
                     "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
-                    "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
-                    "Evaluate the proposed action based on the image and the task. "
-                    "If it is correct, keep the same tokens. If it is wrong, correct them.\n"
-                    "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
+                    "representing: x_move, y_move, z_move, roll, pitch, yaw, and gripper.\n\n"
+                    "If the planner's action is correct, output the same tokens. "
+                    "If it is wrong, correct the action tokens appropriately.\n\n"
+                    "CRITICAL RULE 1: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n"
+                    "CRITICAL RULE 2: You MUST output EXACTLY 7 action tokens between [ACTION] and [/ACTION] tags, whether you modified them or not.\n\n"
                     "Reply EXACTLY in this format:\n"
-                    "CRITIQUE: [one short sentence evaluation]\n"
-                    "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
-                    "Example reply:\n"
-                    "CRITIQUE: The proposed z_move is too large for the distance.\n"
-                    f"[ACTION] {action_str} [/ACTION]"
+                    "CRITIQUE: [one short sentence evaluation]\n\n"  # 줄바꿈 2번으로 텍스트와 토큰 경계 분리
+                    f"[ACTION] {action_str} [/ACTION]\n\n"
                 )}
             ]
         }]
@@ -260,22 +260,22 @@ def _check_format(actor: ActorModel):
                 "content": [
                     {"type": "text", "text": (
                         f"Task: {instruction}\n\n"
-                        "You are an expert robot action critic. A robot arm action has been proposed "
-                        "(provided as embedded action tokens right after this text).\n\n"
+                        f"Planner action tokens: {action_str}\n\n"
+                        "You are an expert robot action critic. Your job is to critically evaluate the action inferred by the planner.\n"
+                        "Judge the situation by looking at the task, the image, and the planner action tokens above.\n"
                         "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
-                        "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
-                        "Evaluate the proposed action based on the image and the task. "
-                        "If it is correct, keep the same tokens. If it is wrong, correct them.\n"
-                        "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
+                        "representing: x_move, y_move, z_move, roll, pitch, yaw, and gripper.\n\n"
+                        "If the planner's action is correct, output the same tokens. "
+                        "If it is wrong, correct the action tokens appropriately.\n\n"
+                        "CRITICAL RULE 1: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n"
+                        "CRITICAL RULE 2: You MUST output EXACTLY 7 action tokens between [ACTION] and [/ACTION] tags, whether you modified them or not.\n\n"
                         "Reply EXACTLY in this format:\n"
-                        "CRITIQUE: [one short sentence evaluation]\n"
-                        "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
-                        "Example reply:\n"
-                        "CRITIQUE: The proposed z_move is too large for the distance.\n"
-                        f"[ACTION] {action_str} [/ACTION]"
+                        "CRITIQUE: [one short sentence evaluation]\n\n"  # 줄바꿈 2번으로 텍스트와 토큰 경계 분리
+                        f"[ACTION] {action_str} [/ACTION]\n\n"
                     )}
                 ]
             }]
+
             cached = actor.processor.apply_chat_template(
                 messages, add_generation_prompt=True,
                 tokenize=True, return_dict=True, return_tensors="pt"
@@ -296,7 +296,7 @@ def _check_format(actor: ActorModel):
                 attention_mask=attention_mask,
                 pixel_values=None,           # 이미지 없음
                 image_hidden_states=None,
-                max_new_tokens=100,
+                max_new_tokens=50,
                 do_sample=False,
                 pad_token_id=actor.processor.tokenizer.eos_token_id
             )
@@ -305,7 +305,7 @@ def _check_format(actor: ActorModel):
 
             new_tokens  = generated_ids[0][prompt_length:]
             output_text = actor.processor.decode(new_tokens, skip_special_tokens=False)
-            print(f"  [형식 확인] {output_text[:100]}")
+            print(f"  [형식 확인] {output_text}")
 
             del input_ids, attention_mask, generated_ids, new_tokens
             torch.cuda.empty_cache()

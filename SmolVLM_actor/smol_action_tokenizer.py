@@ -3,29 +3,23 @@ smol_action_tokenizer.py
 
 Actor 모델의 action token 처리 담당 클래스.
 
-[설계 구조 - Paradigm A 복원]
-    OpenVLA token IDs
-        → openvla_embedding (frozen, 4096차원)   ← OpenVLA가 학습한 action 의미론
-        → Projection layer  (4096→960, 학습가능) ← GRPO로 번역 능력 학습
-        → action_embeds (7, 960)                 ← SmolVLM2 LLM 입력에 직접 concat
+__init__ : Openvla 임베딩 테이블 로드 및 변수 초기화
 
-    [초기화 - 1회]
-        add_tokenizer_vocab()      : SmolVLM2 vocab에 <action_0>~<action_255> 추가
-        resize_embeddings()        : SmolVLM2 임베딩 테이블 확장
-        init_action_embeddings()   : 추가된 256개 토큰을 OpenVLA 임베딩으로 초기화
-                                     (OpenVLA embedding → Projection → SmolVLM2 embedding 공간)
-                                     목적: 랜덤 초기화 대신 로봇 동작 의미론이 담긴 시작점 제공
+add_tokenizer_vocab : SmolVLM 500M tokenizer에 openvla action token 256개 추가
 
-    [매 스텝 - Paradigm A 핵심]
-        embed_action_tokens()         : OpenVLA token ID → openvla_embedding → Projection → (1,7,960)
-                                        매 forward마다 호출, Projection이 GRPO로 학습됨
+resize_embeddings : SmolVLM 500M 임베딩 테이블 크기 확장
 
-    [매 스텝 - 프롬프트 구성용]
-        openvla_ids_to_bin_indices()  : OpenVLA raw token ID → bin index (0~255)
-        bin_indices_to_continuous()   : bin index → 연속값 (-1~+1)
+init_action_embeddings : 추가된 action token을 OpenVLA 임베딩으로 초기화
 
-    [출력 파싱]
-        decode_token_ids_to_actions() : SmolVLM2 출력 <action_N> token ID → 연속값 복원
+setup : 위 3단계 초기화 함수 순서대로 실행
+
+embed_action_tokens : 매 스텝 OpenVLA token ID → SmolVLM2 입력 임베딩 변환 (Paradigm A 핵심)
+
+openvla_ids_to_bin_indices : OpenVLA raw token ID → bin index (0~255) 변환
+
+bin_indices_to_continuous : bin index → 연속값 (-1.0 ~ +1.0) 변환
+
+decode_token_ids_to_actions : SmolVLM2 출력 <action_N> token ID → 연속값 복원
 """
 
 import numpy as np
@@ -99,22 +93,18 @@ class ActorActionTokenizer:
 
     def init_action_embeddings(self, openvla_embed_weights: torch.Tensor):
         """
-        추가된 action token 256개를 OpenVLA 임베딩으로 초기화 (1회).
-
-        흐름:
-            OpenVLA embedding (256, 4096)
-            → Projection Layer (4096 → 960)
-            → SmolVLM2 임베딩 테이블 마지막 256행 교체
-
-        효과:
-            <action_128> 토큰은 처음부터 "중립적 동작(~0.0)"에 해당하는
-            의미있는 벡터로 초기화됨 → 랜덤 초기화 대비 GRPO 수렴 가속
-
-        이후:
-            Paradigm A에서는 embed_action_tokens()가 매 스텝 fresh 임베딩 생성
-            이 초기화는 <action_N> 토큰이 SmolVLM2 출력에 나타날 때의 임베딩 품질에 기여
+        추가된 action token 256개를 OpenVLA 임베딩으로 초기화.
+        프로젝션 레이어를 통해 openvla 임베딩 차원을 smolvlm 임베딩 차원으로 변환하여 초기화.
+        초기화는 한 번만 수행되고, 이후 학습 과정에서 Projection 레이어가 "OpenVLA 공간 → SmolVLM2 공간" 번역을 점점 더 잘 학습하게 됨.
         """
         smol_action_start = len(self.processor.tokenizer) - 256
+        
+        # [수정] 크리티컬 1번 방어: openvla_embed_weights의 형태 검사
+        # openvla_embed_weights가 256행이 아니면 projection 출력이 잘못된 shape이 되어
+        # in_emb.weight.data 대입 시 dimension mismatch 에러가 발생하는 것을 방지합니다.
+        if openvla_embed_weights.shape[0] != 256:
+            openvla_embed_weights = openvla_embed_weights[-256:]
+
         with torch.no_grad():
             init_weights = self.projection(openvla_embed_weights.to("cuda").float())
 
@@ -127,7 +117,12 @@ class ActorActionTokenizer:
             if out_emb is not None:
                 out_emb.weight.data[smol_action_start:] = init_weights.to(torch.bfloat16)
         
-        print("[init_action_embeddings] Action embeddings 및 lm_head 초기화 완료!")
+        # [수정] 크리티컬 2번 방어: lm_head requires_grad 명시적 허용
+        # Weight tying이 없을 경우 lm_head가 얼어있으면 학습이 진행되어도 출력 확률이 오르지 않으므로
+        # 명시적으로 gradient 계산을 허용해줍니다.
+        if out_emb is not None:
+            out_emb.weight.requires_grad_(True)
+            print("[init_action_embeddings] lm_head gradient 허용 완료!")
 
     def setup(self, openvla_embed_weights: torch.Tensor):
         """
@@ -146,7 +141,7 @@ class ActorActionTokenizer:
 
     def embed_action_tokens(self, action_token_ids: torch.Tensor) -> torch.Tensor:
         """
-        [Paradigm A 핵심] OpenVLA action token ID → SmolVLM2 입력 임베딩 변환.
+        OpenVLA action token ID → SmolVLM2 입력 임베딩 변환.
 
         흐름:
             OpenVLA raw token IDs (31744~31999)

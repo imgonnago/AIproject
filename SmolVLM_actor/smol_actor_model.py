@@ -63,7 +63,7 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
+        cfg = dict(group_size=2, max_new_tokens=100, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
     elif total_gb >= 7:
         cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="8GB")
     else:
@@ -73,8 +73,8 @@ def get_vram_config() -> dict:
           f"max_new={cfg['max_new_tokens']}, lora_r={cfg['lora_r']}")
     return cfg
 
-
-SMOL_MODEL_PATH    = "checkpoints/sft"  # SmolVLM2-500M 4bit 사전학습 모델 경로
+CKPT_DIR = "checkpoints/sft" # SmolVLM2-500M 4bit 사전학습 모델 경로
+SMOL_MODEL_PATH    = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct" 
 OPENVLA_EMBED_PATH = "assets/openvla_action_embeddings.pt"
 OPENVLA_DIM        = 4096
 SMOL_DIM           = 960
