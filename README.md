@@ -69,8 +69,7 @@
   > openvla와 qwen2.5vl의 토크나이저 임베딩 공간이 달라서 이를 맞춰주기위한 layer.
   > openvla의 4096차원 action 임베딩을 그냥 넣으면 차원이 안 맞음
   > LLaVA의 projection layer를 참고하여 구현.
-
-  **LLaVA** : [LLaVA](https://github.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py)
+  >  **LLaVA** : [LLaVA](https://github.com/haotian-liu/LLaVA/blob/main/llava/model/multimodal_projector/builder.py)
 
 - **actor_model**
 
