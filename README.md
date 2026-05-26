@@ -105,9 +105,13 @@
 - **smol_train**
 
   > smolvlm train실행 파일.
+  
   > GRPO를 RLinf를 통해 구현함.
+  
   > RLinf : [RLinf](https://github.com/RLinf/RLinf)
+  
   > colliect_rollout과 compute_grpo_loss 함수로 학습 진행.
+  
   > 모델 실행시 해당 파일을 실행해야함.
   
 ---
