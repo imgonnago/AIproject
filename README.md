@@ -106,6 +106,7 @@
 
   > smolvlm train실행 파일.
   > GRPO를 RLinf를 통해 구현함.
+  > RLinf : [RLinf](https://github.com/RLinf/RLinf)
   > colliect_rollout과 compute_grpo_loss 함수로 학습 진행.
   > 모델 실행시 해당 파일을 실행해야함.
   
@@ -122,14 +123,14 @@
 
 **📁checkpoints/sft**
 
-> SFT를 수행한 모델 체크포인트 파일.
-> train이 마음에 안 들때 해당 체크포인트로 다시 학습
+ > SFT를 수행한 모델 체크포인트 파일.
+ > train이 마음에 안 들때 해당 체크포인트로 다시 학습
 
 ---
 
 **sft_log.txts**
   
-> SFT 학습이 제대로 되었다는 증거
+ > SFT 학습이 제대로 되었다는 증거
 
 
 PYTORCH VERSION (나머지는 requirements file 참고)
