@@ -73,7 +73,7 @@ def get_vram_config() -> dict:
           f"max_new={cfg['max_new_tokens']}, lora_r={cfg['lora_r']}")
     return cfg
 
-CKPT_DIR = "checkpoints/sft" # SmolVLM2-500M 4bit 사전학습 모델 경로
+CKPT_PATH = "checkpoints/sft" # SmolVLM2-500M 4bit 사전학습 모델 경로
 SMOL_MODEL_PATH    = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct" 
 OPENVLA_EMBED_PATH = "assets/openvla_action_embeddings.pt"
 OPENVLA_DIM        = 4096
@@ -97,7 +97,7 @@ class ActorModel(nn.Module):
 
         # ── 1. Processor ─────────────────────────────
         print("Processor 로드 중...")
-        self.processor = AutoProcessor.from_pretrained(SMOL_MODEL_PATH)
+        self.processor = AutoProcessor.from_pretrained(CKPT_PATH)
 
         # ── 2. Projection ─────────────────────────────
         # Paradigm A의 핵심 학습 컴포넌트
@@ -122,7 +122,7 @@ class ActorModel(nn.Module):
             bnb_4bit_use_double_quant=True
         )
         self.smol = SmolVLMForConditionalGeneration.from_pretrained(
-            SMOL_MODEL_PATH,
+            CKPT_PATH,
             quantization_config=bnb_config,
             device_map="cuda",
             attn_implementation="eager"
@@ -303,27 +303,26 @@ class ActorModel(nn.Module):
         """
         planner_action_str = " ".join([f"<action_{b}>" for b in planner_bin_indices])
         messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": (
-                    f"Task: {instruction}\n\n"
-                    "You are an expert robot action critic. A robot arm action has been proposed "
-                    "(provided as embedded action tokens right after this text).\n\n"
-                    "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
-                    "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
-                    "Evaluate the proposed action based on the image and the task. "
-                    "If you think it is correct, keep the same tokens. If you think it is wrong, correct them.\n"
-                    "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
-                    "Reply EXACTLY in this format:\n"
-                    "CRITIQUE: [one short sentence evaluation]\n"
-                    "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
-                    "Example reply:\n"
-                    "CRITIQUE: The proposed z_move is too large for the distance.\n"
-                    f"[ACTION] {planner_action_str} [/ACTION]"
-                )}
-            ]
-        }]
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": (
+                        f"Task: {instruction}\n\n"
+                        f"Planner action tokens: {planner_action_str}\n\n"
+                        "You are an expert robot action critic. Your job is to critically evaluate the action inferred by the planner.\n"
+                        "Judge the situation by looking at the task, the image, and the planner action tokens above.\n"
+                        "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
+                        "representing: x_move, y_move, z_move, roll, pitch, yaw, and gripper.\n\n"
+                        "If the planner's action is correct, output the same tokens. "
+                        "If it is wrong, correct the action tokens appropriately.\n\n"
+                        "CRITICAL RULE 1: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n"
+                        "CRITICAL RULE 2: You MUST output EXACTLY 7 action tokens between [ACTION] and [/ACTION] tags, whether you modified them or not.\n\n"
+                        "Reply EXACTLY in this format:\n"
+                        "CRITIQUE: [one short sentence evaluation]\n\n"  # 줄바꿈 2번으로 텍스트와 토큰 경계 분리
+                        f"[ACTION] {planner_action_str} [/ACTION]\n\n"
+                    )}
+                ]
+            }]
         return messages
 
     def _apply_chat_template(
