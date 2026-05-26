@@ -184,18 +184,25 @@ class ActorModel(nn.Module):
         print("ActorModel initialization complete!")
 
     def _register_action_only_embedding_hook(self):
-        """<action_N> embedding 행(마지막 256개)만 gradient 허용."""
         smol_action_start = len(self.processor.tokenizer) - 256
-        embed_layer = self.smol.get_input_embeddings()
-        embed_layer.weight.requires_grad_(True)
-
+        
         def _sparse_hook(grad):
             sparse = torch.zeros_like(grad)
             sparse[smol_action_start:] = grad[smol_action_start:]
             return sparse
 
-        embed_layer.weight.register_hook(_sparse_hook)
-        print(f"[sparse hook] action embedding 행({smol_action_start}~)만 학습")
+        # Input Embeddings 학습 허용
+        in_emb = self.smol.get_input_embeddings()
+        in_emb.weight.requires_grad_(True)
+        in_emb.weight.register_hook(_sparse_hook)
+
+        # Output Embeddings(lm_head) 학습 허용 (필수!)
+        out_emb = self.smol.get_output_embeddings()
+        if out_emb is not None:
+            out_emb.weight.requires_grad_(True)
+            out_emb.weight.register_hook(_sparse_hook)
+
+        print(f"[sparse hook] 입력/출력 action embedding 행({smol_action_start}~)만 학습")
 
     def _connector_output_hook(self, module, input, output):
         """

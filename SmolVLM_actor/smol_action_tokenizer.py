@@ -114,19 +114,20 @@ class ActorActionTokenizer:
             Paradigm A에서는 embed_action_tokens()가 매 스텝 fresh 임베딩 생성
             이 초기화는 <action_N> 토큰이 SmolVLM2 출력에 나타날 때의 임베딩 품질에 기여
         """
-        if openvla_embed_weights.shape[0] != 256:
-            openvla_embed_weights = openvla_embed_weights[-256:]
-
+        smol_action_start = len(self.processor.tokenizer) - 256
         with torch.no_grad():
-            # OpenVLA embedding → Projection → SmolVLM2 공간 (256, 960)
-            init_weights = self.projection(
-                openvla_embed_weights.to("cuda").float()
-            )
+            init_weights = self.projection(openvla_embed_weights.to("cuda").float())
 
-            embed_layer = self.smol_model.get_input_embeddings()
-            embed_layer.weight.data[-256:] = init_weights.to(torch.bfloat16)
+            # 1. Input Embeddings 초기화
+            in_emb = self.smol_model.get_input_embeddings()
+            in_emb.weight.data[smol_action_start:] = init_weights.to(torch.bfloat16)
 
-        print("[init_action_embeddings] Action embeddings 초기화 완료!")
+            # 2. LM Head 초기화 (Weight Tying이 False일 때 필수)
+            out_emb = self.smol_model.get_output_embeddings()
+            if out_emb is not None:
+                out_emb.weight.data[smol_action_start:] = init_weights.to(torch.bfloat16)
+        
+        print("[init_action_embeddings] Action embeddings 및 lm_head 초기화 완료!")
 
     def setup(self, openvla_embed_weights: torch.Tensor):
         """
