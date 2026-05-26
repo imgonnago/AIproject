@@ -31,7 +31,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../SmolVLM_actor"))
 import torch
 import torch.nn.functional as F
 import numpy as np
-from PIL import Image
 from SmolVLM_actor.smol_actor_model import ActorModel
 
 # ─────────────────────────────────────────
@@ -65,21 +64,14 @@ TASK_INSTRUCTIONS = [
 # 합성 데이터 생성
 # ─────────────────────────────────────────
 
-def make_random_image() -> Image.Image:
-    """
-    랜덤 단색 이미지 생성.
-    형식 학습이 목적이므로 실제 장면 불필요.
-    """
-    color = tuple(np.random.randint(50, 200, 3).tolist())
-    img = Image.new("RGB", (224, 224), color=color)
-    return img
-
 def make_sft_example(actor: ActorModel):
     """
-    합성 SFT 데이터 1개 생성.
+    합성 SFT 데이터 1개 생성 (이미지 없음 → vision encoder 실행 안 함 → OOM 없음).
 
     입력:
-        랜덤 이미지 + 랜덤 태스크 + 랜덤 플래너 action
+        텍스트 전용 프롬프트 + 랜덤 플래너 action
+        이미지 제거 이유: 형식 학습이 목적이므로 시각 정보 불필요
+                         vision encoder 실행이 OOM 원인이므로 완전 제거
 
     타겟:
         CRITIQUE: [템플릿 문장]
@@ -91,25 +83,50 @@ def make_sft_example(actor: ActorModel):
     반환:
         (cached_inputs, planner_action_tokens, target_ids)
     """
-    image       = make_random_image()
     instruction = TASK_INSTRUCTIONS[np.random.randint(len(TASK_INSTRUCTIONS))]
 
     # 랜덤 플래너 bin indices (0~255)
-    planner_bin_indices = np.random.randint(0, 256, 7)
-
-    # OpenVLA raw token IDs 형태로 변환 (embed_action_tokens 입력 형식)
+    planner_bin_indices   = np.random.randint(0, 256, 7)
     planner_action_tokens = (32000 - planner_bin_indices).astype(np.int64)
-
-    # 프롬프트 구성 (actor의 기존 메서드 재사용)
-    cached_inputs = actor._apply_chat_template(image, instruction, planner_bin_indices)
 
     # 타겟 출력 구성
     critique_text = CRITIQUE_TEMPLATES[np.random.randint(len(CRITIQUE_TEMPLATES))]
     action_str    = " ".join([f"<action_{b}>" for b in planner_bin_indices])
     target_text   = f"CRITIQUE: {critique_text}\n[ACTION] {action_str} [/ACTION]"
 
+    # 텍스트 전용 프롬프트 (image 타입 없음 → pixel_values 생성 안 됨)
+    messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": (
+                    f"Task: {instruction}\n\n"
+                    "You are an expert robot action critic. A robot arm action has been proposed "
+                    "(provided as embedded action tokens right after this text).\n\n"
+                    "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
+                    "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
+                    "Evaluate the proposed action based on the image and the task. "
+                    "If it is correct, keep the same tokens. If it is wrong, correct them.\n"
+                    "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
+                    "Reply EXACTLY in this format:\n"
+                    "CRITIQUE: [one short sentence evaluation]\n"
+                    "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
+                    "Example reply:\n"
+                    "CRITIQUE: The proposed z_move is too large for the distance.\n"
+                    f"[ACTION] {planner_action_str} [/ACTION]"
+                )}
+            ]
+        }]
+
+    cached_inputs = actor.processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=True,
+        return_dict=True,
+        return_tensors="pt"
+    )
+    # cached_inputs에 pixel_values 없음 → vision encoder 미실행
+
     # 타겟 토크나이징
-    # skip_special_tokens=False: <action_N> 토큰 보존
     target_ids = actor.processor.tokenizer(
         target_text,
         return_tensors="pt",
@@ -148,8 +165,6 @@ def sft_step(
 
     input_ids      = cached_inputs["input_ids"].to("cuda")
     attention_mask = cached_inputs["attention_mask"].to("cuda")
-    pixel_values   = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
-    pixel_values.requires_grad_(False)
     target_ids_gpu = target_ids.to("cuda")  # (1, T)
     T = target_ids_gpu.shape[1]
 
@@ -168,7 +183,8 @@ def sft_step(
         outputs = actor.smol(
             input_ids=full_ids,
             attention_mask=full_mask,
-            pixel_values=pixel_values,
+            pixel_values=None,           # 이미지 없음 → vision encoder 미실행 → OOM 없음
+            image_hidden_states=None,
         )
     finally:
         actor._action_embeds_buffer[0] = None
@@ -187,7 +203,7 @@ def sft_step(
     optimizer.step()
 
     loss_val = loss.item()
-    del input_ids, attention_mask, pixel_values, target_ids_gpu
+    del input_ids, attention_mask, target_ids_gpu
     del full_ids, full_mask, logits, gen_logits, loss
     torch.cuda.empty_cache()
 
@@ -249,15 +265,30 @@ def _check_format(actor: ActorModel):
     """
     try:
         with torch.no_grad():
-            image = make_random_image()
-            instruction = "pick up the object"
+            instruction         = "pick up the object"
             planner_bin_indices = np.array([118, 122, 115, 105, 123, 117, 109])
             planner_action_tokens = (32000 - planner_bin_indices).astype(np.int64)
+            action_str = " ".join([f"<action_{b}>" for b in planner_bin_indices])
 
-            cached_inputs  = actor._apply_chat_template(image, instruction, planner_bin_indices)
-            input_ids      = cached_inputs["input_ids"].to("cuda")
-            attention_mask = cached_inputs["attention_mask"].to("cuda")
-            pixel_values   = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
+            # 텍스트 전용 프롬프트 (이미지 없음)
+            messages = [{
+                "role": "user",
+                "content": [{"type": "text", "text": (
+                    f"Task: {instruction}\n\n"
+                    "A robot arm action has been proposed (embedded after this prompt).\n"
+                    "Evaluate it. Reply EXACTLY:\n"
+                    "CRITIQUE: [brief evaluation]\n"
+                    f"[ACTION] <action_?> × 7 [/ACTION]\n\n"
+                    f"Example:\n[ACTION] {action_str} [/ACTION]"
+                )}]
+            }]
+            cached = actor.processor.apply_chat_template(
+                messages, add_generation_prompt=True,
+                tokenize=True, return_dict=True, return_tensors="pt"
+            )
+
+            input_ids      = cached["input_ids"].to("cuda")
+            attention_mask = cached["attention_mask"].to("cuda")
             prompt_length  = input_ids.shape[1]
 
             action_embeds = actor.action_tokenizer.embed_action_tokens(
@@ -269,9 +300,10 @@ def _check_format(actor: ActorModel):
             generated_ids = actor.smol.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                pixel_values=pixel_values,
+                pixel_values=None,           # 이미지 없음
+                image_hidden_states=None,
                 max_new_tokens=50,
-                do_sample=False,  # 형식 확인은 greedy
+                do_sample=False,
                 pad_token_id=actor.processor.tokenizer.eos_token_id
             )
             actor._action_embeds_buffer[0] = None
@@ -281,7 +313,7 @@ def _check_format(actor: ActorModel):
             output_text = actor.processor.decode(new_tokens, skip_special_tokens=False)
             print(f"  [형식 확인] {output_text[:100]}")
 
-            del input_ids, attention_mask, pixel_values, generated_ids, new_tokens
+            del input_ids, attention_mask, generated_ids, new_tokens
             torch.cuda.empty_cache()
     except Exception as e:
         print(f"  [형식 확인 skip] {e}")
