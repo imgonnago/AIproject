@@ -257,14 +257,24 @@ def _check_format(actor: ActorModel):
             # 텍스트 전용 프롬프트 (이미지 없음)
             messages = [{
                 "role": "user",
-                "content": [{"type": "text", "text": (
-                    f"Task: {instruction}\n\n"
-                    "A robot arm action has been proposed (embedded after this prompt).\n"
-                    "Evaluate it. Reply EXACTLY:\n"
-                    "CRITIQUE: [brief evaluation]\n"
-                    f"[ACTION] <action_?> × 7 [/ACTION]\n\n"
-                    f"Example:\n[ACTION] {action_str} [/ACTION]"
-                )}]
+                "content": [
+                    {"type": "text", "text": (
+                        f"Task: {instruction}\n\n"
+                        "You are an expert robot action critic. A robot arm action has been proposed "
+                        "(provided as embedded action tokens right after this text).\n\n"
+                        "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
+                        "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
+                        "Evaluate the proposed action based on the image and the task. "
+                        "If it is correct, keep the same tokens. If it is wrong, correct them.\n"
+                        "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
+                        "Reply EXACTLY in this format:\n"
+                        "CRITIQUE: [one short sentence evaluation]\n"
+                        "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
+                        "Example reply:\n"
+                        "CRITIQUE: The proposed z_move is too large for the distance.\n"
+                        f"[ACTION] {action_str} [/ACTION]"
+                    )}
+                ]
             }]
             cached = actor.processor.apply_chat_template(
                 messages, add_generation_prompt=True,

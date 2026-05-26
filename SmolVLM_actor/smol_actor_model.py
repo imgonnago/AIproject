@@ -313,7 +313,7 @@ class ActorModel(nn.Module):
                     "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
                     "representing: x_move, y_move, z_move, roll, pitch, yaw, gripper.\n\n"
                     "Evaluate the proposed action based on the image and the task. "
-                    "If it is correct, keep the same tokens. If it is wrong, correct them.\n"
+                    "If you think it is correct, keep the same tokens. If you think it is wrong, correct them.\n"
                     "CRITICAL RULE: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n\n"
                     "Reply EXACTLY in this format:\n"
                     "CRITIQUE: [one short sentence evaluation]\n"
