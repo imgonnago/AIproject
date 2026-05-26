@@ -140,62 +140,44 @@ def make_sft_example(actor: ActorModel):
 # SFT 1 스텝
 # ─────────────────────────────────────────
 
-def sft_step(
-    actor: ActorModel,
-    optimizer: torch.optim.Optimizer,
-    cached_inputs: dict,
-    planner_action_tokens: np.ndarray,
-    target_ids: torch.Tensor
-) -> float:
-    """
-    Cross-entropy loss on target tokens.
-
-    LLM이 보는 sequence:
-        [prompt | action_7 (hook) | target_T]
-
-    Loss: logits[prompt_length-1:-1] vs target_ids
-        → target_T개 토큰에 대한 cross-entropy
-    """
+def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids):
     optimizer.zero_grad()
 
-    # Projection으로 action embeddings 계산
+    input_ids      = cached_inputs["input_ids"].to("cuda")
+    attention_mask = cached_inputs["attention_mask"].to("cuda")
+    target_ids_gpu = target_ids.to("cuda")
+    T = target_ids_gpu.shape[1]
+
+    # embedding table에서 직접 조회
+    embed_layer   = actor.smol.get_input_embeddings()
+    prompt_embeds = embed_layer(input_ids)       # (1, seq, 960)
+    target_embeds = embed_layer(target_ids_gpu)  # (1, T, 960)
+
+    # Projection으로 action embeddings
     action_embeds = actor.action_tokenizer.embed_action_tokens(
         torch.tensor(planner_action_tokens, dtype=torch.long)
     )  # (1, 7, 960)
 
-    input_ids      = cached_inputs["input_ids"].to("cuda")
-    attention_mask = cached_inputs["attention_mask"].to("cuda")
-    target_ids_gpu = target_ids.to("cuda")  # (1, T)
-    T = target_ids_gpu.shape[1]
-
-    # prompt_length: 원본 프롬프트 + hook이 삽입할 7개
-    prompt_length = input_ids.shape[1] + 7
-
-    full_ids  = torch.cat([input_ids, target_ids_gpu], dim=1)   # (1, seq+T)
-    full_mask = torch.cat([
+    # 올바른 순서로 직접 조립: [prompt | action_7 | target_T]
+    # hook 없이 명시적으로 구성 → 위치 오류 없음
+    full_embeds = torch.cat([prompt_embeds, action_embeds, target_embeds], dim=1)
+    full_mask   = torch.cat([
         attention_mask,
-        torch.ones(1, T, dtype=torch.long, device="cuda")
+        torch.ones(1, 7 + T, dtype=torch.long, device="cuda")
     ], dim=1)
 
-    try:
-        actor._action_embeds_buffer[0] = action_embeds
-        actor._action_insert_pos[0]    = input_ids.shape[1]  # prompt 끝에 insert
-        outputs = actor.smol(
-            input_ids=full_ids,
-            attention_mask=full_mask,
-            pixel_values=None,           # 이미지 없음 → vision encoder 미실행 → OOM 없음
-            image_hidden_states=None,
-        )
-    finally:
-        actor._action_embeds_buffer[0] = None
-        actor._action_insert_pos[0]    = None
+    # prompt_length = seq + 7 (action 7개 포함)
+    prompt_length = input_ids.shape[1] + 7
 
-    # LLM sequence: [prompt_seq | action_7 | target_T]
-    # logits[0, prompt_length-1:-1] → (T, vocab): 각 타겟 토큰 예측
-    logits     = outputs.logits
-    gen_logits = logits[0, prompt_length - 1 : -1, :]  # (T, vocab)
+    # 이미지 없는 text-only → inputs_merger 검증 통과 (image token 0개)
+    outputs = actor.smol(
+        inputs_embeds=full_embeds,
+        attention_mask=full_mask,
+        pixel_values=None,
+        image_hidden_states=None,
+    )
 
-    # Cross-entropy: 평균 loss over T 타겟 토큰
+    gen_logits = outputs.logits[0, prompt_length - 1 : -1, :]  # (T, vocab)
     loss = F.cross_entropy(gen_logits, target_ids_gpu[0])
 
     loss.backward()
@@ -204,7 +186,8 @@ def sft_step(
 
     loss_val = loss.item()
     del input_ids, attention_mask, target_ids_gpu
-    del full_ids, full_mask, logits, gen_logits, loss
+    del prompt_embeds, action_embeds, target_embeds, full_embeds, full_mask
+    del outputs, gen_logits, loss
     torch.cuda.empty_cache()
 
     return loss_val
