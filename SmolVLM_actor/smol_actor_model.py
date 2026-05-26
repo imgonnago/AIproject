@@ -74,7 +74,7 @@ def get_vram_config() -> dict:
     return cfg
 
 
-SMOL_MODEL_PATH    = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
+SMOL_MODEL_PATH    = "checkpoints/sft"  # SmolVLM2-500M 4bit 사전학습 모델 경로
 OPENVLA_EMBED_PATH = "assets/openvla_action_embeddings.pt"
 OPENVLA_DIM        = 4096
 SMOL_DIM           = 960

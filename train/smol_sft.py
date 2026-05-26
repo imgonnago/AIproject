@@ -37,7 +37,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # 설정
 # ─────────────────────────────────────────
 
-NUM_STEPS    = 300         # SFT 스텝 수 (수 분 소요)
+NUM_STEPS    = 700         # SFT 스텝 수 (수 분 소요)
 LEARNING_RATE = 5e-5       # GRPO보다 작게: 형식만 학습, 언어 능력 보존
 SAVE_PATH    = "checkpoints/sft"
 
@@ -112,7 +112,7 @@ def make_sft_example(actor: ActorModel):
                     "[ACTION] <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> <action_?> [/ACTION]\n\n"
                     "Example reply:\n"
                     "CRITIQUE: The proposed z_move is too large for the distance.\n"
-                    f"[ACTION] {planner_action_str} [/ACTION]"
+                    f"[ACTION] {action_str} [/ACTION]"
                 )}
             ]
         }]
@@ -237,6 +237,7 @@ def sft_train(actor: ActorModel):
     # 저장
     os.makedirs(SAVE_PATH, exist_ok=True)
     actor.smol.save_pretrained(SAVE_PATH)
+    actor.processor.save_pretrained(SAVE_PATH)
     print(f"\nSFT 완료! 저장: {SAVE_PATH}")
     print("다음 단계: smol_train.py 실행 (GRPO)")
 
@@ -285,7 +286,7 @@ def _check_format(actor: ActorModel):
                 attention_mask=attention_mask,
                 pixel_values=None,           # 이미지 없음
                 image_hidden_states=None,
-                max_new_tokens=50,
+                max_new_tokens=100,
                 do_sample=False,
                 pad_token_id=actor.processor.tokenizer.eos_token_id
             )
