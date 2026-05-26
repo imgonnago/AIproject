@@ -18,9 +18,9 @@
 
 **Actor 1** : Qwen2.5VL 3B + 4bit + LoRA + GRPO
 
-**Actor 2** : SmolVLM 500B + 4bit + LoRA + GRPO <- **(use)**
+**Actor 2** : SmolVLM 500M + 4bit + LoRA + GRPO <- **(use)**
 
-**Simulator** : LIBREO-Long
+**Simulator** : LIBERO (libero_10)
 
 ---
 
@@ -82,8 +82,8 @@
 
 - **smol_action_tokenizer**
 
-  > smolvlm LLM tokenizer에 openvla 256개 action token 추가.
-  > qwen_actor의 기능들과 같음.
+  > smolvlm LLM tokenizer에 openvla의 액션 토큰을 이식.
+  > 모델 실행시 토크나이저를 초기화시킴.
 
 - **smol_actor_model**
 
@@ -101,11 +101,12 @@
 - **train**
 
   > main역할을 하는 파일임. GRPO와 LIBERO를 실행.
-  > 보상함수를 설계 해야함.
 
 - **smol_train**
 
   > smolvlm train실행 파일.
+  > GRPO를 RLinf를 통해 구현함.
+  > colliect_rollout과 compute_grpo_loss 함수로 학습 진행.
   > 모델 실행시 해당 파일을 실행해야함.
   
 ---
@@ -116,6 +117,20 @@
 
   > openvla action embedding 파라미터를 다운받는 파일.
   > 모델 실행시키기 전에 무조건 한 번 실행시켜야함.
+
+---
+
+**📁checkpoints/sft**
+
+> SFT를 수행한 모델 체크포인트 파일.
+> train이 마음에 안 들때 해당 체크포인트로 다시 학습
+
+---
+
+**sft_log.txts**
+  
+> SFT 학습이 제대로 되었다는 증거
+
 
 PYTORCH VERSION (나머지는 requirements file 참고)
 ---
