@@ -7,10 +7,15 @@ smol_sft.py — 형식 학습용 SFT (Supervised Fine-Tuning)
 
 [데이터 전략]
     실제 환경/데이터 불필요. 합성 데이터 사용:
-        - 이미지:         224×224 단색 (랜덤 RGB)
+        - 이미지:         224×224 단색 blank (GRPO와 동일한 이미지 컨텍스트 구조)
         - 플래너 action:  랜덤 bin indices (0~255)
         - 타겟 출력:      올바른 형식으로 플래너 action 그대로 출력
                           → 모델이 먼저 형식 학습 → GRPO에서 수정 능력 학습
+
+[핵심 변경]
+    이미지 포함 SFT: blank 이미지 IHS를 1회 캡처 → 모든 스텝 재사용
+    GRPO와 동일한 입력 분포 [image_tokens | text | action_7 | target] 학습
+    OOM 없음: vision encoder는 캡처 시 1회만 실행, 이후 image_hidden_states 재사용
 
 [학습 후 기대 효과]
     파싱 성공률 ~0% → ~90%+
@@ -31,6 +36,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../SmolVLM_actor"))
 import torch
 import torch.nn.functional as F
 import numpy as np
+from PIL import Image
 from SmolVLM_actor.smol_actor_model import ActorModel
 
 # ─────────────────────────────────────────
@@ -60,73 +66,67 @@ TASK_INSTRUCTIONS = [
 ]
 
 
+
+# ─────────────────────────────────────────
+# image features 사전 캡처 (1회)
+# ─────────────────────────────────────────
+
+def capture_shared_ihs(actor: ActorModel) -> torch.Tensor:
+    """
+    SFT 시작 전 blank 이미지로 image features 1회 캡처.
+    SFT 전 스텝에서 image_hidden_states로 재사용.
+
+    vision encoder는 이 1회만 실행 → OOM 없음.
+    IHS를 공유하므로 모든 스텝이 동일한 이미지 컨텍스트를 가짐.
+    이미지 내용(색상)이 아니라 이미지 컨텍스트 구조가 목적이므로 OK.
+    """
+    print("[SFT] blank 이미지로 image features 사전 캡처 중...")
+    blank       = Image.new("RGB", (224, 224), color=(128, 128, 128))
+    instruction = "pick up the object"
+
+    with torch.no_grad():
+        # actor.generate()는 8-tuple 반환, 마지막이 image_hidden_states (CPU tensor)
+        *_, shared_ihs = actor.generate(image=blank, instruction=instruction)
+
+    torch.cuda.empty_cache()
+    print(f"[SFT] image features 캡처 완료: shape={shared_ihs.shape}")
+    return shared_ihs  # CPU tensor, 모든 SFT 스텝에서 재사용
+
+
 # ─────────────────────────────────────────
 # 합성 데이터 생성
 # ─────────────────────────────────────────
 
-def make_sft_example(actor: ActorModel):
+def make_sft_example(actor: ActorModel, blank_image: Image.Image):
     """
-    합성 SFT 데이터 1개 생성 (이미지 없음 → vision encoder 실행 안 함 → OOM 없음).
+    합성 SFT 데이터 1개 생성.
 
     입력:
-        텍스트 전용 프롬프트 + 랜덤 플래너 action
-        이미지 제거 이유: 형식 학습이 목적이므로 시각 정보 불필요
-                         vision encoder 실행이 OOM 원인이므로 완전 제거
+        blank 이미지(고정) + 랜덤 태스크 + 랜덤 플래너 action
+        이미지를 포함하여 GRPO와 동일한 입력 분포 구성:
+            [image_tokens | text_tokens | action_7 | target]
+        vision encoder는 capture_shared_ihs()에서 1회만 실행 → OOM 없음
 
     타겟:
         CRITIQUE: [템플릿 문장]
         [ACTION] <action_X> × 7 [/ACTION]
 
-        플래너 action을 그대로 복사 → 형식 학습에 집중
-        (이후 GRPO에서 언제 수정할지 학습)
-
     반환:
         (cached_inputs, planner_action_tokens, target_ids)
     """
-    instruction = TASK_INSTRUCTIONS[np.random.randint(len(TASK_INSTRUCTIONS))]
-
-    # 랜덤 플래너 bin indices (0~255)
+    instruction           = TASK_INSTRUCTIONS[np.random.randint(len(TASK_INSTRUCTIONS))]
     planner_bin_indices   = np.random.randint(0, 256, 7)
     planner_action_tokens = (32000 - planner_bin_indices).astype(np.int64)
 
-    # 타겟 출력 구성
     critique_text = CRITIQUE_TEMPLATES[np.random.randint(len(CRITIQUE_TEMPLATES))]
     action_str    = " ".join([f"<action_{b}>" for b in planner_bin_indices])
-    eos_token = actor.processor.tokenizer.eos_token
-    target_text = f"CRITIQUE: {critique_text}\n\n[ACTION] {action_str} [/ACTION]{eos_token}"
+    eos_token     = actor.processor.tokenizer.eos_token
+    target_text   = f"CRITIQUE: {critique_text}\n\n[ACTION] {action_str} [/ACTION]{eos_token}"
 
-    # 텍스트 전용 프롬프트 (image 타입 없음 → pixel_values 생성 안 됨)
-    messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": (
-                    f"Task: {instruction}\n\n"
-                    f"Planner action tokens: {action_str}\n\n"
-                    "You are an expert robot action critic. Your job is to critically evaluate the action inferred by the planner.\n"
-                    "Judge the situation by looking at the task, the image, and the planner action tokens above.\n"
-                    "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
-                    "representing: x_move, y_move, z_move, roll, pitch, yaw, and gripper.\n\n"
-                    "If the planner's action is correct, output the same tokens. "
-                    "If it is wrong, correct the action tokens appropriately.\n\n"
-                    "CRITICAL RULE 1: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n"
-                    "CRITICAL RULE 2: You MUST output EXACTLY 7 action tokens between [ACTION] and [/ACTION] tags, whether you modified them or not.\n\n"
-                    "Reply EXACTLY in this format:\n"
-                    "CRITIQUE: [one short sentence evaluation]\n\n"  # 줄바꿈 2번으로 텍스트와 토큰 경계 분리
-                    f"[ACTION] {action_str} [/ACTION]\n\n"
-                )}
-            ]
-        }]
+    # GRPO와 동일한 이미지 기반 프롬프트 (_apply_chat_template 재사용)
+    # pixel_values는 cached_inputs에 있지만 sft_step에서 사용 안 함 (shared_ihs 사용)
+    cached_inputs = actor._apply_chat_template(blank_image, instruction, planner_bin_indices)
 
-    cached_inputs = actor.processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        return_tensors="pt"
-    )
-    # cached_inputs에 pixel_values 없음 → vision encoder 미실행
-
-    # 타겟 토크나이징
     target_ids = actor.processor.tokenizer(
         target_text,
         return_tensors="pt",
@@ -140,54 +140,65 @@ def make_sft_example(actor: ActorModel):
 # SFT 1 스텝
 # ─────────────────────────────────────────
 
-def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids):
+def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids, shared_ihs):
+    """
+    Cross-entropy loss on target tokens.
+
+    LLM이 보는 sequence (GRPO generate와 동일한 구조):
+        [image_tokens | text_tokens | action_7 (hook) | target_T]
+
+    shared_ihs: capture_shared_ihs()에서 캡처된 blank 이미지 image features (CPU)
+                inputs_merger가 image placeholder 위치에 삽입 → image context 제공
+                vision encoder 재실행 없음 → OOM 없음
+    """
     optimizer.zero_grad()
 
     input_ids      = cached_inputs["input_ids"].to("cuda")
     attention_mask = cached_inputs["attention_mask"].to("cuda")
     target_ids_gpu = target_ids.to("cuda")
-    T = target_ids_gpu.shape[1]
+    T              = target_ids_gpu.shape[1]
 
-    # embedding table에서 직접 조회
-    embed_layer   = actor.smol.get_input_embeddings()
-    prompt_embeds = embed_layer(input_ids)       # (1, seq, 960)
-    target_embeds = embed_layer(target_ids_gpu)  # (1, T, 960)
+    prompt_seq_len = input_ids.shape[1]
+    prompt_length  = prompt_seq_len + 7  # +7: hook이 prompt 끝에 삽입할 action embeds
 
-    # Projection으로 action embeddings
+    # Projection으로 action embeddings 계산 (gradient 흐름)
     action_embeds = actor.action_tokenizer.embed_action_tokens(
         torch.tensor(planner_action_tokens, dtype=torch.long)
     )  # (1, 7, 960)
 
-    # 올바른 순서로 직접 조립: [prompt | action_7 | target_T]
-    # hook 없이 명시적으로 구성 → 위치 오류 없음
-    full_embeds = torch.cat([prompt_embeds, action_embeds, target_embeds], dim=1)
-    full_mask   = torch.cat([
+    full_ids  = torch.cat([input_ids, target_ids_gpu], dim=1)   # (1, seq+T)
+    full_mask = torch.cat([
         attention_mask,
-        torch.ones(1, 7 + T, dtype=torch.long, device="cuda")
+        torch.ones(1, T, dtype=torch.long, device="cuda")
     ], dim=1)
 
-    # prompt_length = seq + 7 (action 7개 포함)
-    prompt_length = input_ids.shape[1] + 7
+    ihs_gpu = shared_ihs.to("cuda")
 
-    # 이미지 없는 text-only → inputs_merger 검증 통과 (image token 0개)
-    outputs = actor.smol(
-        inputs_embeds=full_embeds,
-        attention_mask=full_mask,
-        pixel_values=None,
-        image_hidden_states=None,
-    )
+    try:
+        actor._action_embeds_buffer[0] = action_embeds
+        actor._action_insert_pos[0]    = prompt_seq_len  # prompt 끝 ~ target 사이에 삽입
+        outputs = actor.smol(
+            input_ids=full_ids,
+            attention_mask=full_mask,
+            pixel_values=None,
+            image_hidden_states=ihs_gpu,   # connector 캡처 IHS → vision encoder 미실행
+        )
+    finally:
+        actor._action_embeds_buffer[0] = None
+        actor._action_insert_pos[0]    = None
 
-    gen_logits = outputs.logits[0, prompt_length - 1 : -1, :]  # (T, vocab)
-    loss = F.cross_entropy(gen_logits, target_ids_gpu[0])
+    # LLM sequence: [image+text (seq) | action_7 | target_T]
+    # logits[0, prompt_length-1:-1] → (T, vocab): 각 타겟 토큰 예측
+    gen_logits = outputs.logits[0, prompt_length - 1 : -1, :]
+    loss       = F.cross_entropy(gen_logits, target_ids_gpu[0])
 
     loss.backward()
     torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
     optimizer.step()
 
     loss_val = loss.item()
-    del input_ids, attention_mask, target_ids_gpu
-    del prompt_embeds, action_embeds, target_embeds, full_embeds, full_mask
-    del outputs, gen_logits, loss
+    del input_ids, attention_mask, target_ids_gpu, full_ids, full_mask, ihs_gpu
+    del action_embeds, outputs, gen_logits, loss
     torch.cuda.empty_cache()
 
     return loss_val
@@ -217,13 +228,17 @@ def sft_train(actor: ActorModel):
         optimizer = torch.optim.AdamW(trainable, lr=LEARNING_RATE)
         print("[optimizer] AdamW")
 
+    # blank 이미지 + IHS 사전 준비 (1회)
+    blank_image = Image.new("RGB", (224, 224), color=(128, 128, 128))
+    shared_ihs  = capture_shared_ihs(actor)
+
     losses = []
 
     for step in range(1, NUM_STEPS + 1):
-        # 매 스텝 새 합성 데이터 생성
-        cached_inputs, planner_action_tokens, target_ids = make_sft_example(actor)
+        # 매 스텝 새 합성 데이터 생성 (blank_image 고정, 내용 무관)
+        cached_inputs, planner_action_tokens, target_ids = make_sft_example(actor, blank_image)
 
-        loss = sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids)
+        loss = sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids, shared_ihs)
         losses.append(loss)
 
         if step % 50 == 0:
@@ -244,71 +259,20 @@ def sft_train(actor: ActorModel):
 
 def _check_format(actor: ActorModel):
     """
-    학습 중 형식 출력 확인용 (간단한 generate 테스트).
+    학습 중 형식 출력 확인용.
+    actor.generate()로 blank 이미지 → GRPO와 동일한 조건에서 형식 검증.
     에러 나도 무시하고 계속 학습.
     """
     try:
-        with torch.no_grad():
-            instruction         = "pick up the object"
-            planner_bin_indices = np.array([118, 122, 115, 105, 123, 117, 109])
-            planner_action_tokens = (32000 - planner_bin_indices).astype(np.int64)
-            action_str = " ".join([f"<action_{b}>" for b in planner_bin_indices])
-
-            # 텍스트 전용 프롬프트 (이미지 없음)
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": (
-                        f"Task: {instruction}\n\n"
-                        f"Planner action tokens: {action_str}\n\n"
-                        "You are an expert robot action critic. Your job is to critically evaluate the action inferred by the planner.\n"
-                        "Judge the situation by looking at the task, the image, and the planner action tokens above.\n"
-                        "The action consists of 7 tokens in the format <action_N> (N is 0-255), "
-                        "representing: x_move, y_move, z_move, roll, pitch, yaw, and gripper.\n\n"
-                        "If the planner's action is correct, output the same tokens. "
-                        "If it is wrong, correct the action tokens appropriately.\n\n"
-                        "CRITICAL RULE 1: Keep your CRITIQUE extremely short (under 10 words) to save memory.\n"
-                        "CRITICAL RULE 2: You MUST output EXACTLY 7 action tokens between [ACTION] and [/ACTION] tags, whether you modified them or not.\n\n"
-                        "Reply EXACTLY in this format:\n"
-                        "CRITIQUE: [one short sentence evaluation]\n\n"  # 줄바꿈 2번으로 텍스트와 토큰 경계 분리
-                        f"[ACTION] {action_str} [/ACTION]\n\n"
-                    )}
-                ]
-            }]
-
-            cached = actor.processor.apply_chat_template(
-                messages, add_generation_prompt=True,
-                tokenize=True, return_dict=True, return_tensors="pt"
-            )
-
-            input_ids      = cached["input_ids"].to("cuda")
-            attention_mask = cached["attention_mask"].to("cuda")
-            prompt_length  = input_ids.shape[1]
-
-            action_embeds = actor.action_tokenizer.embed_action_tokens(
-                torch.tensor(planner_action_tokens, dtype=torch.long)
-            )
-            actor._action_embeds_buffer[0] = action_embeds
-            actor._action_insert_pos[0]    = None  # generate: append at end
-
-            generated_ids = actor.smol.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                pixel_values=None,           # 이미지 없음
-                image_hidden_states=None,
-                max_new_tokens=50,
-                do_sample=False,
-                pad_token_id=actor.processor.tokenizer.eos_token_id
-            )
-            actor._action_embeds_buffer[0] = None
-            actor._action_insert_pos[0]    = None
-
-            new_tokens  = generated_ids[0][prompt_length:]
-            output_text = actor.processor.decode(new_tokens, skip_special_tokens=False)
-            print(f"  [형식 확인] {output_text}")
-
-            del input_ids, attention_mask, generated_ids, new_tokens
-            torch.cuda.empty_cache()
+        blank = Image.new("RGB", (224, 224), color=(128, 128, 128))
+        (critique, action_vector, action_token_ids, *_) = actor.generate(
+            image=blank, instruction="pick up the object"
+        )
+        smol_start = len(actor.processor.tokenizer) - 256
+        format_ok  = any(smol_start <= int(t) < smol_start + 256 for t in action_token_ids)
+        print(f"  [형식 확인] CRITIQUE: {critique[:60] if critique else '없음'}")
+        print(f"  [형식 확인] action tokens: {'OK' if format_ok else 'FAIL'} | "
+              f"action: {np.round(action_vector, 2)}")
     except Exception as e:
         print(f"  [형식 확인 skip] {e}")
 
