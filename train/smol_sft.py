@@ -43,7 +43,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # 설정
 # ─────────────────────────────────────────
 
-NUM_STEPS    = 700         # SFT 스텝 수 (수 분 소요)
+NUM_STEPS    = 800         # SFT 스텝 수 (수 분 소요)
 LEARNING_RATE = 5e-5       # GRPO보다 작게: 형식만 학습, 언어 능력 보존
 SAVE_PATH    = "checkpoints/sft"
 
@@ -121,7 +121,9 @@ def make_sft_example(actor: ActorModel, blank_image: Image.Image):
     critique_text = CRITIQUE_TEMPLATES[np.random.randint(len(CRITIQUE_TEMPLATES))]
     action_str    = " ".join([f"<action_{b}>" for b in planner_bin_indices])
     eos_token     = actor.processor.tokenizer.eos_token
-    target_text   = f"CRITIQUE: {critique_text}\n\n[ACTION] {action_str} [/ACTION]{eos_token}"
+    # "CRITIQUE: " 는 _apply_chat_template에서 프롬프트에 이미 추가됨
+    # 타겟은 CRITIQUE: 이후 continuation만 포함
+    target_text   = f"{critique_text}\n\n[ACTION] {action_str} [/ACTION]{eos_token}"
 
     # GRPO와 동일한 이미지 기반 프롬프트 (_apply_chat_template 재사용)
     # pixel_values는 cached_inputs에 있지만 sft_step에서 사용 안 함 (shared_ihs 사용)
@@ -145,7 +147,10 @@ def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids,
     Cross-entropy loss on target tokens.
 
     LLM이 보는 sequence (GRPO generate와 동일한 구조):
-        [image_tokens | text_tokens | action_7 (hook) | target_T]
+        [image_tokens | text_tokens | action_7 (hook) | CRITIQUE: | target_T]
+
+    action_7은 "CRITIQUE: " 바로 앞에 삽입됨 (insert_pos = prompt_seq_len - critique_token_len)
+    → 모델이 action_embeds를 본 직후 critique text를 생성하도록 학습
 
     shared_ihs: capture_shared_ihs()에서 캡처된 blank 이미지 image features (CPU)
                 inputs_merger가 image placeholder 위치에 삽입 → image context 제공
@@ -159,7 +164,7 @@ def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids,
     T              = target_ids_gpu.shape[1]
 
     prompt_seq_len = input_ids.shape[1]
-    prompt_length  = prompt_seq_len + 7  # +7: hook이 prompt 끝에 삽입할 action embeds
+    prompt_length  = prompt_seq_len + 7  # +7: hook이 CRITIQUE: 앞에 삽입할 action embeds
 
     # Projection으로 action embeddings 계산 (gradient 흐름)
     action_embeds = actor.action_tokenizer.embed_action_tokens(
@@ -176,7 +181,10 @@ def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids,
 
     try:
         actor._action_embeds_buffer[0] = action_embeds
-        actor._action_insert_pos[0]    = prompt_seq_len  # prompt 끝 ~ target 사이에 삽입
+        # "CRITIQUE: " 앞에 action_7 삽입 (generate()와 동일한 구조)
+        # [image | text | action_7 | CRITIQUE: | target] 순서 보장
+        critique_token_len             = cached_inputs.get("critique_token_len", 0)
+        actor._action_insert_pos[0]    = prompt_seq_len - critique_token_len
         outputs = actor.smol(
             input_ids=full_ids,
             attention_mask=full_mask,
@@ -187,7 +195,7 @@ def sft_step(actor, optimizer, cached_inputs, planner_action_tokens, target_ids,
         actor._action_embeds_buffer[0] = None
         actor._action_insert_pos[0]    = None
 
-    # LLM sequence: [image+text (seq) | action_7 | target_T]
+    # LLM sequence: [image+text | action_7 | CRITIQUE: | target_T]
     # logits[0, prompt_length-1:-1] → (T, vocab): 각 타겟 토큰 예측
     gen_logits = outputs.logits[0, prompt_length - 1 : -1, :]
     loss       = F.cross_entropy(gen_logits, target_ids_gpu[0])

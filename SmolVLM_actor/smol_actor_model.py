@@ -63,7 +63,7 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=2, max_new_tokens=100, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
+        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
     elif total_gb >= 7:
         cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="8GB")
     else:
@@ -249,16 +249,36 @@ class ActorModel(nn.Module):
         if embeds is None:
             return args, kwargs
 
-        # action_embeds concat: (1, seq, 960) + (1, 7, 960) → (1, seq+7, 960)
-        kwargs["inputs_embeds"] = torch.cat(
-            [embeds, action_embeds.to(embeds.dtype)], dim=1
-        )
-
-        # attention mask 확장: (1, seq) → (1, seq+7)
+        # action_embeds 삽입: insert_pos 위치에 따라 append 또는 positional insert
+        # None  → generate() 레거시: 프롬프트 끝에 append
+        # int   → forward()/sft/generate() 모드: 지정 위치에 insert
+        #         ex) insert_pos = seq - critique_token_len
+        #             → [text | action_7 | CRITIQUE: ] 순서 보장
+        insert_pos = self._action_insert_pos[0]
         mask = kwargs.get("attention_mask")
-        if mask is not None:
-            extra = torch.ones(1, 7, dtype=mask.dtype, device=mask.device)
-            kwargs["attention_mask"] = torch.cat([mask, extra], dim=1)
+        extra = torch.ones(1, 7, dtype=embeds.dtype if mask is None else mask.dtype,
+                           device=embeds.device)
+
+        if insert_pos is None:
+            # 끝에 append: (1, seq, 960) + (1, 7, 960) → (1, seq+7, 960)
+            kwargs["inputs_embeds"] = torch.cat(
+                [embeds, action_embeds.to(embeds.dtype)], dim=1
+            )
+            if mask is not None:
+                kwargs["attention_mask"] = torch.cat([mask, extra], dim=1)
+        else:
+            # 지정 위치에 insert: [embeds[:pos] | action_7 | embeds[pos:]]
+            kwargs["inputs_embeds"] = torch.cat([
+                embeds[:, :insert_pos, :],
+                action_embeds.to(embeds.dtype),
+                embeds[:, insert_pos:, :]
+            ], dim=1)
+            if mask is not None:
+                kwargs["attention_mask"] = torch.cat([
+                    mask[:, :insert_pos],
+                    extra,
+                    mask[:, insert_pos:]
+                ], dim=1)
 
         # position_ids 확장 (제공된 경우): 연속적인 위치 추가
         pos_ids = kwargs.get("position_ids")
@@ -332,13 +352,37 @@ class ActorModel(nn.Module):
         planner_bin_indices: np.ndarray
     ) -> dict:
         messages = self._make_messages(image, instruction, planner_bin_indices)
-        return self.processor.apply_chat_template(
+        cached = self.processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
             tokenize=True,
             return_dict=True,
             return_tensors="pt"
         )
+
+        # "CRITIQUE: " 강제 prefix: 모델이 항상 CRITIQUE로 시작하도록 보장
+        #
+        # 최종 LLM 입력 순서:
+        #   [image | text | action_7(hook 삽입) | CRITIQUE: ] → continuation 생성
+        #
+        # hook insert_pos = input_ids.shape[1] - critique_token_len 으로
+        # action_7이 "CRITIQUE: " 바로 앞에 삽입됨 → 액션을 본 후 비판적 텍스트 생성
+        #
+        # generate(): new_tokens = "CRITIQUE: " 이후 토큰들
+        #             output_text = "CRITIQUE: " + decode(new_tokens) 로 복원
+        # sft/forward(): target = critique_text + "\n\n[ACTION] ... " (CRITIQUE: 제외)
+        critique_prefix = self.processor.tokenizer(
+            "CRITIQUE: ", return_tensors="pt", add_special_tokens=False
+        )["input_ids"]  # (1, cl)
+
+        cached["input_ids"] = torch.cat([cached["input_ids"], critique_prefix], dim=1)
+        cached["attention_mask"] = torch.cat([
+            cached["attention_mask"],
+            torch.ones(1, critique_prefix.shape[1], dtype=torch.long)
+        ], dim=1)
+        cached["critique_token_len"] = critique_prefix.shape[1]  # insert_pos 계산용
+
+        return cached
 
 
     # ─────────────────────────────────────────
@@ -392,7 +436,10 @@ class ActorModel(nn.Module):
 
         try:
             self._action_embeds_buffer[0] = action_embeds
-            self._action_insert_pos[0]    = input_ids.shape[1]  # prompt 끝에 insert
+            # "CRITIQUE: " 앞에 action_7 삽입 (generate()와 동일한 구조)
+            # [image | text | action_7 | CRITIQUE: | new_tokens] 순서로 학습
+            critique_token_len            = cached_inputs.get("critique_token_len", 0)
+            self._action_insert_pos[0]    = input_ids.shape[1] - critique_token_len
             outputs = self.smol(
                 input_ids=full_ids,
                 attention_mask=full_mask,
@@ -452,12 +499,19 @@ class ActorModel(nn.Module):
             torch.tensor(planner_action_tokens, dtype=torch.long)
         )  # (1, 7, 960)
 
+        # "CRITIQUE: " 앞에 action_7을 삽입
+        # [image | text | action_7 | CRITIQUE: ] → continuation 생성
+        # generate/forward/sft 모두 동일한 insert_pos 사용 → 학습-추론 일관성 보장
+        critique_token_len = cached_inputs.get("critique_token_len", 0)
+        insert_pos         = input_ids.shape[1] - critique_token_len
+
         # generated_ids 슬라이싱용: hook의 7개는 token ID에 포함 안 됨
+        # new_tokens = "CRITIQUE: " 이후 생성된 continuation 토큰들
         prompt_length = input_ids.shape[1]
 
         try:
             self._action_embeds_buffer[0] = action_embeds
-            self._action_insert_pos[0]    = None   # generate: 프롬프트 끝에 append
+            self._action_insert_pos[0]    = insert_pos  # "CRITIQUE: " 앞에 action_7 삽입
             self._capture_ihs = True               # connector hook 캡처 활성화
             self._ihs_cache[0] = None
             generated_ids = self.smol.generate(
@@ -486,9 +540,11 @@ class ActorModel(nn.Module):
         del generated_ids
         torch.cuda.empty_cache()
 
-        output_text = self.processor.decode(new_tokens, skip_special_tokens=False)
+        # new_tokens은 "CRITIQUE: " 이후 토큰들이므로 앞에 복원
+        # _parse_critique(), _parse_and_decode_action() 모두 정상 동작
+        output_text = "CRITIQUE: " + self.processor.decode(new_tokens, skip_special_tokens=False)
         print("=" * 50)
-        print(f"[generate] {output_text[:80]}")
+        print(f"[generate] {output_text}")
 
         critique = self._parse_critique(output_text)
         action_vector, action_token_ids, parsing_failed = self._parse_and_decode_action(

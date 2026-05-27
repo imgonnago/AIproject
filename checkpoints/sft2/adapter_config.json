@@ -31,8 +31,8 @@
   "revision": null,
   "target_modules": [
     "k_proj",
-    "v_proj",
-    "q_proj"
+    "q_proj",
+    "v_proj"
   ],
   "target_parameters": null,
   "task_type": "CAUSAL_LM",
