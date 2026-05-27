@@ -1,5 +1,6 @@
 <h1>AIproject : 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발</h1> 
 
+**Critical text And Dual System Visual Language Action Model(CADS-VLA)**
 
 <a href="https://pytorch.org/get-started/locally/">
   <img src="https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
@@ -132,16 +133,31 @@
 
 ---
 
-**📁checkpoints/sft**
+**📁checkpoints**
+
+- **sft**
 
  > SFT를 수행한 모델 체크포인트 파일.
- > train이 마음에 안 들때 해당 체크포인트로 다시 학습
+ > train이 마음에 안 들때 해당 체크포인트로 다시 학습.
+ > 해당 학습을 시킬 때 비전 인코더를 사용하지 않은 오류가 있음. 사용하지 않음
+
+- **sft2**
+
+  > SFT 수행한 체크포인트.
+  > 비판적 텍스트와 액션 토큰을 추론하는 능력을 기본적으로 학습 시킴.
+  > 해당 체크파일은 비전 인코더 사용 버전으로, 해당 파일 사용.
 
 ---
 
 **sft_log.txts**
   
  > SFT 학습이 제대로 되었다는 증거
+ > 비전 인코더를 사용하지 않은 오류.
+
+**sft_log2.txts**
+
+> SFT 학습 증거.
+> 비전 인코더 사용함.
 
 
 PYTORCH VERSION (나머지는 requirements file 참고)
