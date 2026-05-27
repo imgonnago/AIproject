@@ -63,17 +63,17 @@ def get_vram_config() -> dict:
     print(f"[VRAM 감지] GPU: {name}, VRAM: {total_gb:.1f} GB")
 
     if total_gb >= 10:
-        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
+        cfg = dict(group_size=2, max_new_tokens=40, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="12GB")
     elif total_gb >= 7:
-        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="8GB")
+        cfg = dict(group_size=2, max_new_tokens=30, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="8GB")
     else:
-        cfg = dict(group_size=2, max_new_tokens=50, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="6GB")
+        cfg = dict(group_size=2, max_new_tokens=20, lora_r=4, lora_alpha=8, use_8bit_adam=True, label="6GB")
 
     print(f"[VRAM 설정] {cfg['label']}: group={cfg['group_size']}, "
           f"max_new={cfg['max_new_tokens']}, lora_r={cfg['lora_r']}")
     return cfg
 
-CKPT_PATH = "checkpoints/sft" # SmolVLM2-500M 4bit 사전학습 모델 경로
+SFT_MODEL_PATH = "checkpoints/sft2" # SmolVLM2-500M 4bit 사전학습 모델 경로
 SMOL_MODEL_PATH    = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct" 
 OPENVLA_EMBED_PATH = "assets/openvla_action_embeddings.pt"
 OPENVLA_DIM        = 4096
@@ -97,7 +97,7 @@ class ActorModel(nn.Module):
 
         # ── 1. Processor ─────────────────────────────
         print("Processor 로드 중...")
-        self.processor = AutoProcessor.from_pretrained(CKPT_PATH)
+        self.processor = AutoProcessor.from_pretrained(SFT_MODEL_PATH)
 
         # ── 2. Projection ─────────────────────────────
         # Paradigm A의 핵심 학습 컴포넌트
@@ -122,7 +122,7 @@ class ActorModel(nn.Module):
             bnb_4bit_use_double_quant=True
         )
         self.smol = SmolVLMForConditionalGeneration.from_pretrained(
-            CKPT_PATH,
+            SFT_MODEL_PATH,
             quantization_config=bnb_config,
             device_map="cuda",
             attn_implementation="eager"
