@@ -97,21 +97,60 @@ def get_image_from_obs(obs: dict) -> Image.Image:
 # 보상 함수
 # ─────────────────────────────────────────
 
-def reward_fn(action_vector: np.ndarray, info: dict) -> float:
+def reward_fn(
+    action_vector: np.ndarray,
+    info: dict,
+    planner_action: np.ndarray = None
+) -> float:
+    """
+    보상 함수.
+
+    [설계 원칙]
+    actor 성능 ≥ OpenVLA 성능 보장:
+        - 잘 모르면 planner 그대로 → OpenVLA와 동일 성능
+        - 확실히 틀렸을 때만 수정 → OpenVLA보다 나음
+        - 잘못 수정 → OpenVLA보다 나쁨 (이 경우 페널티)
+
+    [편차 기반 보상]
+    deviation < 0.3  : planner 유지 → +0.1 (보수적 행동 장려)
+    deviation > 1.0
+      + 태스크 실패  : 불필요한 수정 → -0.1 (잘못된 수정 억제)
+      + 태스크 성공  : 올바른 수정 → reward 그대로 (수정 능력 유지)
+    """
     try:
         if info.get("parsing_failed", False):
             return -1.0
+
         reward = 0.0
+
         if info.get("success", False):
             reward += 1.0
+
         if np.any(np.isnan(action_vector)):
             return -1.0
+
         out_of_range = int(np.sum(np.abs(action_vector) > 1.0))
         if out_of_range > 0:
             reward -= 0.1 * out_of_range
+
         mag = float(np.linalg.norm(action_vector[:6]))
         if mag > 2.0:
             reward -= 0.2 * (mag - 2.0)
+
+        # ── planner 행동 유지 인센티브 ──────────────────────────────
+        if planner_action is not None:
+            deviation = float(np.linalg.norm(action_vector - planner_action))
+            success   = info.get("success", False)
+
+            if deviation < 0.3:
+                # planner 거의 그대로 유지 → 보수적 행동 보상
+                # 모를 때 planner 따르는 것이 안전함을 학습
+                reward += 0.3
+            elif deviation > 1.0 and not success:
+                # 크게 수정했는데 태스크도 실패 → 불필요한 수정 억제
+                reward -= 0.2
+        # ────────────────────────────────────────────────────────────
+
         return float(np.clip(reward, -1.0, 2.0))
     except Exception as e:
         print(f"[reward_fn 오류] {e}")
@@ -178,14 +217,23 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
 
             obs, _, done, info = env.step(action_vector)
 
+            # planner의 연속값 액션 계산 (reward_fn 편차 계산용)
+            # OpenVLA token ID → bin index → 연속값 (-1~+1)
+            planner_action = actor.action_tokenizer.bin_indices_to_continuous(
+                actor.action_tokenizer.openvla_ids_to_bin_indices(
+                    np.array(planner_tokens)
+                )
+            )
+
             info["parsing_failed"] = parsing_failed
-            reward = reward_fn(action_vector, info)
+            reward = reward_fn(action_vector, info, planner_action=planner_action)
 
             group_traj.append({
                 "cached_inputs":         cached_inputs,
                 "new_tokens":            new_tokens,           # CPU tensor
                 "image_hidden_states":   image_hidden_states,  # connector 캡처 (CPU)
                 "planner_action_tokens": planner_tokens,       # raw OpenVLA IDs
+                "planner_action":        planner_action,       # 플래너 연속값 (편차 계산용)
                 "action_token_ids":      torch.tensor(action_token_ids, dtype=torch.long),
                 "action_vector":         action_vector,
                 "critique":              critique,
