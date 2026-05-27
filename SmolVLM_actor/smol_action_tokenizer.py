@@ -158,7 +158,7 @@ class ActorActionTokenizer:
         :return: shape (1, 7, 960), bfloat16
         """
         # raw OpenVLA token ID → bin index (0~255)
-        bin_indices = self.OPENVLA_VOCAB_SIZE - action_token_ids
+        bin_indices = self.OPENVLA_VOCAB_SIZE - action_token_ids -1
         bin_indices = torch.clamp(bin_indices, min=0, max=255)
 
         # OpenVLA 임베딩 테이블에서 lookup (frozen): (7, 4096)
@@ -193,7 +193,7 @@ class ActorActionTokenizer:
         :param openvla_token_ids: shape (7,), OpenVLA vocab 기준 raw token IDs
         :return: shape (7,), bin indices (0~255)
         """
-        bin_indices = self.OPENVLA_VOCAB_SIZE - np.array(openvla_token_ids)
+        bin_indices = self.OPENVLA_VOCAB_SIZE - np.array(openvla_token_ids) -1
         return np.clip(bin_indices, 0, 255).astype(int)
 
     def bin_indices_to_continuous(self, bin_indices: np.ndarray) -> np.ndarray:
