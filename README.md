@@ -37,13 +37,11 @@
 
 ##Model Structure 
 ---
+![Figure 1](assets/Model_Structure.png)
 
 
 
 ##github file structure
----
-![Figure 1](assets/Model_Structure.png)
-
 ---
 
 **📁openvla_planner**
