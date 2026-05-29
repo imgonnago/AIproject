@@ -36,12 +36,19 @@
 
 ## Model Figure 
 
-![Figure1](https://github.com/user-attachments/assets/650c1e20-e838-4298-b15f-702f08740c15)
+1. Model Structure
+![Figure1](https://github.com/user-attachments/assets/c6055027-b82a-41d0-9014-a3361050e986)
 
+---
+2. Model Process
 ![Figure2](https://github.com/user-attachments/assets/50fd98e9-dffc-429b-be59-c3cc7f95bf14)
 
-![Figure3](https://github.com/user-attachments/assets/c6055027-b82a-41d0-9014-a3361050e986)
+---
+3. FLow Chart
+![Figure3](https://github.com/user-attachments/assets/650c1e20-e838-4298-b15f-702f08740c15)
 
+---
+4. Actor Tokenizer Process
 ![Figure4](https://github.com/user-attachments/assets/a0326300-32d0-4257-844c-1f55a22a0375)
 
 
