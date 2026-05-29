@@ -57,8 +57,9 @@
 > 구현한 actino tokenizer의 구조를 구체화. 각 데이터들은 각각 vision encoder, llm, projection layer를 통과하여 임베딩 형태로 변환되고, input merge와 action injection hook을 통해 같은 공간으로 투영되고 concat을 진행함. 이때 이미지와 텍스트는 smolvlm의 프로세서를 거침. 이후 트랜스포머를 통과하고 출력을 냄.
 ---
 ![Figure5](https://github.com/user-attachments/assets/24cca233-9f8b-46a6-8a42-dd81779f43d5)
+- **5. Suprevised Fine Tuning**
 
-> 바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 
+> 바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 총 4개 스테이지로 구성되었고, 스테이지마다 순차적으로 학습.
 
 ## github file structure
 
