@@ -25,7 +25,7 @@
 
 ---
 
-**Back Bone Model URL**
+##Back Bone Model URL
 ---
 **- OpenVLA** : [openvla](https://github.com/openvla/openvla.git)
 
@@ -35,8 +35,15 @@
 
 **- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
 
+##Model Structure 
+---
 
-**github file structure**
+
+
+##github file structure
+---
+![Figure 1](assets/Model_Structure.png)
+
 ---
 
 **📁openvla_planner**
@@ -160,7 +167,7 @@
 > 비전 인코더 사용함.
 
 
-PYTORCH VERSION (나머지는 requirements file 참고)
+##PYTORCH VERSION (나머지는 requirements file 참고)
 ---
 torch version (qwen)
 
@@ -196,7 +203,7 @@ python openvla_planner/openvla_inference_code.py
 python train/train.py
 ```
 
-**기타 설정**
+##기타 설정
 ---
 
 모델 실행시 vram 사용량과 train log를 기록할 수 있는 코드.
