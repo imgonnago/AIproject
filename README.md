@@ -36,7 +36,7 @@
 
 ## Model Structure 
 
-![Figure1](file:///C:/Users/zxfg0/Pictures/Model_Structure.png](https://github.com/user-attachments/assets/8f1cfd85-6158-4562-bcc1-4bc3c7860d88)
+![Figure1](https://github.com/user-attachments/assets/8f1cfd85-6158-4562-bcc1-4bc3c7860d88)
 
 
 
