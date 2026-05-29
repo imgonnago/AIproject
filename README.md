@@ -1,6 +1,6 @@
 <h1>AIproject : 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발</h1> 
 
-**Critical text And Dual System Visual Language Action Model(CADS-VLA)**
+**Critical text And Dual System Vision Language Action Model(CADS-VLA)**
 
 <a href="https://pytorch.org/get-started/locally/">
   <img src="https://img.shields.io/badge/PYTORCH-Qwen%202.6.0%20cu124-brightgreen?style=flat-square&label=PYTORCH&labelColor=%23eeeeee&color=%23d63f3a" height="40"/>
