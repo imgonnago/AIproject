@@ -23,10 +23,9 @@
 
 **Simulator** : LIBERO (libero_10)
 
----
 
 ## Back Bone Model URL
----
+
 **- OpenVLA** : [openvla](https://github.com/openvla/openvla.git)
 
 **- Qwen2.5VL** : [Qwen2.5VL](https://github.com/huggingface/transformers/tree/main/src/transformers/models/qwen2_5_vl)
@@ -42,7 +41,6 @@
 
 
 ## github file structure
----
 
 **📁openvla_planner**
 
@@ -166,7 +164,7 @@
 
 
 ## PYTORCH VERSION (나머지는 requirements file 참고)
----
+
 torch version (qwen)
 
 `pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124`
