@@ -36,22 +36,25 @@
 
 ## Model Figure 
 
-1. Model Structure
 ![Figure1](https://github.com/user-attachments/assets/c6055027-b82a-41d0-9014-a3361050e986)
+- **1. Model Structure**
 
+> 모델의 전체적 구조를 간단하게 도식화 함. planner의 openvla 모델은 forzen으로 사용. actor의 backbone 모델은 LVM 모델 중 매우 가벼운 SmolVLM 500M을 사용. Planner는 action token id를 actor로 전달. actor는 이를 openvla embedding table로 받아 projection layer를 거쳐 차원을 맞춘 뒤 image와 text를 smolvlm의 processor를 거친 임베딩과 concat함. 이후 llm을 거쳐 나온 임베딩을 detoken 과정을 거쳐 텍스트로 표현되고 로봇이 액션. 로봇의 액션 성공 실패 여부로 reward를 받아 GRPO 학습 커리큘럼을 통해 학습됨. 
 ---
-2. Model Process
-![Figure2](https://github.com/user-attachments/assets/50fd98e9-dffc-429b-be59-c3cc7f95bf14)
+![Figure2](https://github.com/user-attachments/assets/27a72cc4-e406-4fe8-a1c4-9dd48d1d4295)
+- **2. Model Process**
 
+> 모델의 전체적 프로세스를 그림으로 표현. planner는 이미지와 텍스트를 openvla 자체 llm과 vit로 처리한 뒤 action token 추론을 통해 action token id를 내보냄. actor는 이미지와 텍스트를 smolvlm 자체 llm과 vit로 처리. planner에서 받아온 action token은 openvla에서 가져온 action embedding table(frozen)을 통해 임베딩으로 변환. 이후 projection layer를 통해 smolvlm의 임베딩 차원으로 변환하여 processor와 concat함. 이때 smolvlm의 tokenizer에는 openvla의 256개 action token이 add 되어있음. 이를 과정을 거쳐 transformer에서 attention 연산을 한 뒤 디토크나이저에서 텍스트를, action token은 action vector의 형태로 로봇으로 들어가고 행동을 함. 
 ---
-3. FLow Chart
 ![Figure3](https://github.com/user-attachments/assets/650c1e20-e838-4298-b15f-702f08740c15)
+- **3. FLow Chart**
 
+> 모델의 플로우 차트. 모델에서의 전체적인 데이터의 흐름을 표현. planner와 actor의 구조는 앞서 설명한 과정과 같아서 생략. actor와 planner에서 사용하는 이미지, 텍스트 데이터들은 모두 LIBERO 환경에서 수집됨. zeroMQ를 통해 actor가 planner 서버로 넘기는 구조. 위에 actor action tokenizer init 과정에서 256개 액션 토큰을 openvla에서 가져와 add -> action embedding table -> resieze -> projection layer 과정으로 tokenizer를 초기화 시킴. 아래 GRPO trian 과정은 RLinf의 프레임워크를 반영. collect rollout 에서 libero 환경에서의 데이터들을 그룹 사이즈만큼 수집. 이 과정에서 비판적 텍스트와 action token을 추론하여 액션을 수행하고 그에 따른 reward와 loss등을 계산하고 가중치 업데이트를 compute 과정에서 수행. 이후 이를 통해 LoRA를 학습시킴. 
 ---
-4. Actor Tokenizer Process
 ![Figure4](https://github.com/user-attachments/assets/a0326300-32d0-4257-844c-1f55a22a0375)
+- **4. Actor Tokenizer Process**
 
-
+> 구현한 actino tokenizer의 구조를 구체화. 각 데이터들은 각각 vision encoder, llm, projection layer를 통과하여 임베딩 형태로 변환되고, input merge와 action injection hook을 통해 같은 공간으로 투영되고 concat을 진행함. 이때 이미지와 텍스트는 smolvlm의 프로세서를 거침. 이후 트랜스포머를 통과하고 출력을 냄. 
 
 ## github file structure
 
