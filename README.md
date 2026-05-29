@@ -37,7 +37,7 @@
 
 ##Model Structure 
 ---
-![Figure 1](assets/Model_Structure.png)
+![Figure 1](file:///C:/Users/zxfg0/Pictures/Model_Structure.png)
 
 
 
