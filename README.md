@@ -34,7 +34,7 @@
 
 **- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
 
-##Model Structure 
+## Model Structure 
 ---
 ![Figure1](file:///C:/Users/zxfg0/Pictures/Model_Structure.png)
 
