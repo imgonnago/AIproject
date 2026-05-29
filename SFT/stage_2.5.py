@@ -1,0 +1,298 @@
+"""
+smol_sft_stage2_5.py — Stage 2.5: 액션 토큰 집중 학습 (500 스텝)
+
+[목적]
+    Stage 2에서 형식([ACTION] 태그)을 학습한 후,
+    액션 토큰 7개 출력에만 집중해서 정확도 향상.
+
+[손실 마스크]
+    텍스트:     loss = 0
+    액션 토큰:  loss = 1 (7개만)
+
+로드: checkpoints/sft_stage2
+저장: checkpoints/sft_stage2_5
+다음: smol_sft_stage3.py (성공/실패 예측)
+"""
+
+import os
+import sys
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:256")
+sys.path.append(os.path.join(os.path.dirname(__file__), "../SmolVLM_actor"))
+
+import torch
+import torch.nn.functional as F
+import numpy as np
+from PIL import Image
+from safetensors.torch import load_file
+
+from libero.libero import benchmark
+from libero.libero.envs import OffScreenRenderEnv
+from SmolVLM_actor.smol_actor_model import ActorModel
+
+NUM_STEPS         = 500
+LEARNING_RATE     = 1e-5
+TASK_SUITE        = "libero_10"
+TASK_IDS          = [0, 1, 2, 3, 4]
+TASK_SWITCH_EVERY = 100
+RESET_EVERY       = 10
+IMG_HEIGHT        = 224
+IMG_WIDTH         = 224
+LOAD_PATH         = "checkpoints/sft_stage2"
+SAVE_PATH         = "checkpoints/sft_stage2_5"
+FALLBACK_TEXT     = "I observe the scene and evaluate the proposed action."
+
+
+# ─────────────────────────────────────────
+# 체크포인트 로드
+# ─────────────────────────────────────────
+
+def load_checkpoint(actor: ActorModel, path: str):
+    print(f"[체크포인트 로드] {path}")
+    sf_files = [f for f in os.listdir(path) if f.endswith(".safetensors")]
+    if not sf_files:
+        print("  경고: safetensors 없음, 기본 가중치 사용")
+        return
+    state_dict = {}
+    for f in sf_files:
+        state_dict.update(load_file(os.path.join(path, f)))
+    missing, unexpected = actor.smol.load_state_dict(state_dict, strict=False)
+    print(f"  완료 | missing={len(missing)} unexpected={len(unexpected)}")
+
+
+# ─────────────────────────────────────────
+# Scene text 사전 수집
+# ─────────────────────────────────────────
+
+def get_scene_text(actor: ActorModel, image: Image.Image,
+                   instruction: str) -> str:
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": f"Briefly describe the scene for: {instruction}"}
+        ]
+    }]
+    inputs = actor.processor.apply_chat_template(
+        messages, add_generation_prompt=True,
+        tokenize=True, return_dict=True, return_tensors="pt"
+    )
+    inputs = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+    try:
+        with torch.no_grad():
+            with actor.smol.disable_adapter():
+                out = actor.smol.generate(
+                    **inputs, max_new_tokens=40,
+                    do_sample=True, temperature=0.7,
+                )
+        prompt_len = inputs["input_ids"].shape[1]
+        text = actor.processor.decode(
+            out[0][prompt_len:], skip_special_tokens=True
+        ).strip()
+        del out
+    except Exception:
+        text = ""
+    del inputs
+    torch.cuda.empty_cache()
+    return text if text else FALLBACK_TEXT
+
+
+def precompute_scene_texts(actor, env, instruction, n=60):
+    print(f"  [scene_text 사전 수집] {n}개...")
+    texts, obs = [], env.reset()
+    for i in range(n):
+        image = get_image(obs)
+        texts.append(get_scene_text(actor, image, instruction))
+        obs, _, done, _ = env.step(np.zeros(7))
+        if done:
+            obs = env.reset()
+    torch.cuda.empty_cache()
+    print(f"  완료 | 고유: {len(set(texts))}/{n}")
+    return texts
+
+
+# ─────────────────────────────────────────
+# LIBERO 환경
+# ─────────────────────────────────────────
+
+def make_env(task_id: int):
+    benchmark_dict = benchmark.get_benchmark_dict()
+    task_suite     = benchmark_dict[TASK_SUITE]()
+    task_name      = task_suite.get_task_names()[task_id]
+    task_bddl_file = task_suite.get_task_bddl_file_path(task_id)
+    env = OffScreenRenderEnv(**{
+        "bddl_file_name": task_bddl_file,
+        "camera_heights": IMG_HEIGHT,
+        "camera_widths":  IMG_WIDTH,
+    })
+    env.seed(42 + task_id)
+    return env, task_name
+
+
+def get_image(obs):
+    return Image.fromarray(obs["agentview_image"].astype(np.uint8))
+
+
+# ─────────────────────────────────────────
+# SFT 스텝 (액션 토큰만 loss=1)
+# ─────────────────────────────────────────
+
+def sft_step(actor, optimizer, cached_inputs,
+             planner_tokens, target_ids, loss_mask, ihs):
+    optimizer.zero_grad()
+
+    if loss_mask.sum() < 1:
+        return 0.0
+
+    target_gpu    = target_ids.to("cuda")
+    loss_mask_gpu = loss_mask.to("cuda")
+
+    logits, prompt_length = actor.forward(
+        cached_inputs=cached_inputs,
+        new_tokens=target_gpu[0],
+        planner_action_tokens=planner_tokens,
+        image_hidden_states=ihs
+    )
+
+    gen_logits     = logits[0, prompt_length - 1 : -1]
+    per_token_loss = F.cross_entropy(gen_logits, target_gpu[0], reduction="none")
+    loss           = (per_token_loss * loss_mask_gpu).sum() / loss_mask_gpu.sum()
+
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
+    optimizer.step()
+
+    val = loss.item()
+    del logits, gen_logits, per_token_loss, loss, target_gpu, loss_mask_gpu
+    torch.cuda.empty_cache()
+    return val
+
+
+# ─────────────────────────────────────────
+# 액션 토큰 출력 확인
+# ─────────────────────────────────────────
+
+def check_action_tokens(actor, env, instruction):
+    try:
+        obs   = env.reset()
+        image = get_image(obs)
+        with torch.no_grad():
+            (critique, action_vec, action_ids, *_) = actor.generate(
+                image=image, instruction=instruction
+            )
+        smol_start = len(actor.processor.tokenizer) - 256
+        n_action   = sum(1 for t in action_ids if smol_start <= int(t) < smol_start + 256)
+        ok = "✓" if n_action == 7 else "✗"
+        print(f"  [{ok}] action_tokens={n_action}/7")
+        print(f"       CRITIQUE: {(critique or '없음')[:80]}")
+        if n_action == 7:
+            print(f"       vec: {np.round(action_vec, 2)}")
+    except Exception as e:
+        print(f"  [확인 skip] {e}")
+
+
+# ─────────────────────────────────────────
+# 학습 루프
+# ─────────────────────────────────────────
+
+def train_stage2_5(actor: ActorModel):
+    print(f"\n{'='*60}")
+    print(f"Stage 2.5: 액션 토큰 복구 ({NUM_STEPS} 스텝)")
+    print(f"텍스트: loss=0 | 액션 토큰 7개: loss=1")
+    print(f"{'='*60}\n")
+
+    load_checkpoint(actor, LOAD_PATH)
+    # reset_action_lm_head 없음: Stage 2 체크포인트 상태 그대로 이어받음
+
+    smol_start = len(actor.processor.tokenizer) - 256
+
+    trainable = list(filter(lambda p: p.requires_grad, actor.parameters()))
+    try:
+        from bitsandbytes.optim import AdamW8bit
+        optimizer = AdamW8bit(trainable, lr=LEARNING_RATE)
+        print("[optimizer] AdamW8bit")
+    except ImportError:
+        optimizer = torch.optim.AdamW(trainable, lr=LEARNING_RATE)
+
+    task_idx = 0
+    env, instruction = make_env(TASK_IDS[task_idx])
+    scene_texts = precompute_scene_texts(actor, env, instruction)
+    obs = env.reset()
+    print(f"[태스크 {TASK_IDS[task_idx]}] {instruction[:60]}\n")
+
+    losses = []
+
+    for step in range(1, NUM_STEPS + 1):
+        if step % TASK_SWITCH_EVERY == 1 and step > 1:
+            env.close()
+            task_idx = (task_idx + 1) % len(TASK_IDS)
+            env, instruction = make_env(TASK_IDS[task_idx])
+            scene_texts = precompute_scene_texts(actor, env, instruction)
+            obs = env.reset()
+            print(f"\n[태스크 전환 → {TASK_IDS[task_idx]}] {instruction[:60]}")
+
+        if step % RESET_EVERY == 1 and step > 1:
+            obs = env.reset()
+
+        image = get_image(obs)
+
+        with torch.no_grad():
+            (_, _, _, planner_tokens, cached_inputs, _, _, ihs) = actor.generate(
+                image=image, instruction=instruction
+            )
+
+        scene_text = scene_texts[np.random.randint(len(scene_texts))]
+
+        planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(
+            np.array(planner_tokens)
+        )
+        action_str  = " ".join([f"<action_{b}>" for b in planner_bin])
+        eos         = actor.processor.tokenizer.eos_token
+        target_text = f"{scene_text}\n\n[ACTION] {action_str} [/ACTION]{eos}"
+
+        target_ids = actor.processor.tokenizer(
+            target_text, return_tensors="pt", add_special_tokens=False
+        )["input_ids"]
+
+        # 액션 토큰 7개만 loss=1
+        target_np = target_ids.numpy()[0]
+        is_action = (target_np >= smol_start) & (target_np < smol_start + 256)
+        loss_mask = torch.FloatTensor(is_action.astype(np.float32))
+
+        loss_val = sft_step(actor, optimizer, cached_inputs,
+                            planner_tokens, target_ids, loss_mask, ihs)
+        losses.append(loss_val)
+
+        try:
+            action = actor.action_tokenizer.bin_indices_to_continuous(planner_bin)
+            obs, _, done, _ = env.step(action)
+            if done:
+                obs = env.reset()
+        except Exception:
+            obs = env.reset()
+
+        if step % 50 == 0:
+            valid = [l for l in losses[-50:] if l > 0]
+            avg   = float(np.mean(valid)) if valid else 0.0
+            print(f"  [Step {step:3d}/{NUM_STEPS}] action_loss={avg:.4f} | task={TASK_IDS[task_idx]}")
+
+        if step % 100 == 0:
+            check_action_tokens(actor, env, instruction)
+
+    env.close()
+    os.makedirs(SAVE_PATH, exist_ok=True)
+    actor.smol.save_pretrained(SAVE_PATH)
+    actor.processor.save_pretrained(SAVE_PATH)
+    print(f"\n[Stage 2.5 완료] 저장: {SAVE_PATH}")
+    print("다음: smol_sft_stage3.py")
+
+
+def main():
+    print(f"[CUDA] {os.environ.get('PYTORCH_CUDA_ALLOC_CONF', '미설정')}")
+    actor = ActorModel()
+    actor.smol.gradient_checkpointing_enable()
+    train_stage2_5(actor)
+    actor.close()
+
+
+if __name__ == "__main__":
+    main()

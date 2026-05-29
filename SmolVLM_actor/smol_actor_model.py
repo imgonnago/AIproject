@@ -318,19 +318,36 @@ class ActorModel(nn.Module):
         planner_bin_indices: np.ndarray
     ) -> list:
         """
-        action은 hook으로 embedding 주입됨 (텍스트에 값 노출 불필요).
-        <action_N> 출력 형식과 예시만 표시 → cold start 형식 학습.
+        플래너 액션을 연속값 텍스트로 변환해서 프롬프트에 포함.
+
+        기존: <action_97> <action_121> ... → 모델에 의미 없는 토큰
+        변경: x=+0.03, y=+0.13, z=0.00, ... → 모델이 의미 이해 가능
+              → "팔이 오른쪽으로 가야하는데 왼쪽으로 가고 있음" 같은 비판 가능
+
+        action embedding은 여전히 hook으로 주입 (Projection 학습용).
+        텍스트 표현은 모델의 언어 이해를 위한 추가 컨텍스트.
+        출력은 여전히 [ACTION] <action_N>×7 [/ACTION] 형식.
         """
-        planner_action_str = " ".join([f"<action_{b}>" for b in planner_bin_indices])
+        # bin_indices → 연속값 (-1.0 ~ +1.0)
+        action_vec = self.action_tokenizer.bin_indices_to_continuous(planner_bin_indices)
+        x, y, z, roll, pitch, yaw, gripper = action_vec
+
+        action_text = (
+            f"x={x:+.2f}, y={y:+.2f}, z={z:+.2f}, "
+            f"roll={roll:+.2f}, pitch={pitch:+.2f}, yaw={yaw:+.2f}, "
+            f"gripper={'open' if gripper > 0 else 'close'}"
+        )
+
         messages = [{
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
                     f"Task: {instruction}\n"
-                    f"Proposed: {planner_action_str}\n\n"
-                    f"Describe what you see, then output the action.\n"
-                    f"[ACTION] <action_N> × 7 [/ACTION]"
+                    f"Proposed: {action_text}\n\n"
+                    f"Reply in this format:\n"
+                    f"CRITIQUE: [one sentence about what you see]\n\n"
+                    f"[ACTION] {' '.join([f'<action_{b}>' for b in planner_bin_indices])} [/ACTION]"
                 )}
             ]
         }]

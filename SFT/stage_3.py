@@ -1,23 +1,23 @@
 """
-smol_sft_stage3.py — Stage 3: 액션 토큰 추종 학습 (700 스텝)
+smol_sft_stage3.py — Stage 3: 성공/실패 예측 + 액션 생성 학습
 
 [목적]
-    Stage 2 체크포인트 기반.
-    텍스트는 자유 (loss=0), 액션 토큰만 OpenVLA를 따라가도록 학습.
-    GRPO 시작점이 OpenVLA 벤치마크 수준으로 보장됨.
+    OpenVLA rollout → 성공/실패 레이블 수집 (53.7% 성공률 → 균형잡힌 데이터)
 
-[핵심 설계]
-    reset_action_lm_head(): Stage 2 로드 후 편향 재제거
-    get_scene_text():        Stage 1,2와 동일한 방식
-    손실 마스크:             액션 토큰 7개만 loss=1, 텍스트 = loss=0
-                             → 텍스트 다양성 보존 + 액션 정확도 향상
+    SUCCESS 에피소드: scene_text + SUCCESS + [ACTION] planner_action [/ACTION]
+                     손실: SUCCESS 토큰 + 액션 7개 (텍스트 free)
+                     → 액션 토큰 생성 능력 + 성공 인식 동시 학습
+
+    FAILURE 에피소드: scene_text + FAILURE
+                     손실: FAILURE 토큰만 (텍스트 free)
+                     → 실패 인식 학습 (틀린 액션은 강화하지 않음)
+
+[GRPO 연결]
+    모델이 "이 장면 + 이 액션 = SUCCESS/FAILURE" 판단 가능
+    → GRPO에서 "FAILURE니까 액션 수정" 자연스럽게 학습
 
 로드: checkpoints/sft_stage2
 저장: checkpoints/sft_stage3
-다음: smol_train.py (GRPO)
-
-실행:
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python train/smol_sft_stage3.py
 """
 
 import os
@@ -35,33 +35,20 @@ from libero.libero import benchmark
 from libero.libero.envs import OffScreenRenderEnv
 from SmolVLM_actor.smol_actor_model import ActorModel
 
-NUM_STEPS         = 700
-LEARNING_RATE     = 1e-5
-TASK_SUITE        = "libero_10"
-TASK_IDS          = [0, 1, 2, 3, 4]
-TASK_SWITCH_EVERY = 100
-RESET_EVERY       = 10
-IMG_HEIGHT        = 224
-IMG_WIDTH         = 224
-LOAD_PATH         = "checkpoints/sft_stage2"
-SAVE_PATH         = "checkpoints/sft_stage3"
-FALLBACK_TEXT     = "I observe the scene and evaluate the proposed action."
-
-
 # ─────────────────────────────────────────
-# lm_head action token 편향 제거
+# 설정
 # ─────────────────────────────────────────
-
-def reset_action_lm_head(actor: ActorModel):
-    lm_head = actor.smol.get_output_embeddings()
-    regular = lm_head.weight.data[:-256]
-    mean = regular.mean(dim=0, keepdim=True)
-    std  = regular.std(dim=0, keepdim=True).clamp(min=1e-6)
-    with torch.no_grad():
-        new_w = torch.normal(mean.expand(256, -1), std.expand(256, -1))
-        lm_head.weight.data[-256:] = new_w.to(lm_head.weight.dtype)
-    after = lm_head.weight.data[-256:].norm(dim=1).mean().item()
-    print(f"[reset_action_lm_head] 완료 | action token norm: {after:.3f}")
+TASK_SUITE           = "libero_long"
+TASK_IDS             = [0, 1, 2, 3, 4]
+EPISODES_PER_TASK    = 8          # 태스크당 rollout 에피소드 수
+MAX_STEPS_PER_EP     = 250        # 에피소드 최대 스텝
+TRAIN_EPOCHS         = 3          # 수집 데이터 반복 학습
+LEARNING_RATE        = 1e-5
+IMG_HEIGHT           = 224
+IMG_WIDTH            = 224
+LOAD_PATH            = "checkpoints/sft_stage2"
+SAVE_PATH            = "checkpoints/sft_stage3"
+FALLBACK_TEXT        = "I observe the scene and evaluate the proposed action."
 
 
 # ─────────────────────────────────────────
@@ -79,71 +66,6 @@ def load_checkpoint(actor: ActorModel, path: str):
         state_dict.update(load_file(os.path.join(path, f)))
     missing, unexpected = actor.smol.load_state_dict(state_dict, strict=False)
     print(f"  완료 | missing={len(missing)} unexpected={len(unexpected)}")
-
-
-# ─────────────────────────────────────────
-# 장면 텍스트 생성 (Stage 1에서 확인된 방식)
-# ─────────────────────────────────────────
-
-def get_scene_text(actor: ActorModel, image: Image.Image,
-                   instruction: str, verbose: bool = False) -> str:
-    messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image", "image": image},
-            {"type": "text", "text": f"Briefly describe the scene for: {instruction}"}
-        ]
-    }]
-    inputs = actor.processor.apply_chat_template(
-        messages, add_generation_prompt=True,
-        tokenize=True, return_dict=True, return_tensors="pt"
-    )
-    inputs = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
-
-    try:
-        with torch.no_grad():
-            with actor.smol.disable_adapter():
-                out = actor.smol.generate(
-                    **inputs, max_new_tokens=40,
-                    do_sample=True, temperature=0.7,
-                )
-        prompt_len = inputs["input_ids"].shape[1]
-        text = actor.processor.decode(
-            out[0][prompt_len:], skip_special_tokens=True
-        ).strip()
-        del out
-    except Exception as e:
-        print(f"  [scene_text ERROR] {e}")
-        text = ""
-
-    if verbose:
-        print(f"  [scene_text] '{text[:100] if text else '(없음)'}'")
-
-    del inputs
-    torch.cuda.empty_cache()
-    return text if text else FALLBACK_TEXT
-
-
-# ─────────────────────────────────────────
-# Scene text 사전 수집
-# ─────────────────────────────────────────
-
-def precompute_scene_texts(actor: ActorModel, env, instruction: str,
-                           n: int = 60) -> list:
-    print(f"  [scene_text 사전 수집] {n}개 수집 중...")
-    texts = []
-    obs = env.reset()
-    for i in range(n):
-        image = get_image(obs)
-        text  = get_scene_text(actor, image, instruction, verbose=(i < 3))
-        texts.append(text)
-        obs, _, done, _ = env.step(np.zeros(7))
-        if done:
-            obs = env.reset()
-    torch.cuda.empty_cache()
-    unique = len(set(texts))
-    print(f"  [scene_text 사전 수집] 완료 | 고유 텍스트: {unique}/{n}")
-    return texts
 
 
 # ─────────────────────────────────────────
@@ -169,15 +91,158 @@ def get_image(obs):
 
 
 # ─────────────────────────────────────────
-# SFT 스텝 (액션 토큰만 loss=1)
+# Scene text 사전 수집
+# ─────────────────────────────────────────
+
+def get_scene_text(actor: ActorModel, image: Image.Image,
+                   instruction: str) -> str:
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": image},
+            {"type": "text", "text": f"Briefly describe the scene for: {instruction}"}
+        ]
+    }]
+    inputs = actor.processor.apply_chat_template(
+        messages, add_generation_prompt=True,
+        tokenize=True, return_dict=True, return_tensors="pt"
+    )
+    inputs = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+    try:
+        with torch.no_grad():
+            with actor.smol.disable_adapter():
+                out = actor.smol.generate(
+                    **inputs, max_new_tokens=40,
+                    do_sample=True, temperature=0.7,
+                )
+        prompt_len = inputs["input_ids"].shape[1]
+        text = actor.processor.decode(
+            out[0][prompt_len:], skip_special_tokens=True
+        ).strip()
+        del out
+    except Exception:
+        text = ""
+    del inputs
+    torch.cuda.empty_cache()
+    return text if text else FALLBACK_TEXT
+
+
+def precompute_scene_texts(actor, env, instruction, n=60):
+    print(f"  [scene_text 사전 수집] {n}개...")
+    texts = []
+    obs = env.reset()
+    for _ in range(n):
+        image = get_image(obs)
+        texts.append(get_scene_text(actor, image, instruction))
+        obs, _, done, _ = env.step(np.zeros(7))
+        if done:
+            obs = env.reset()
+    torch.cuda.empty_cache()
+    print(f"  [scene_text 사전 수집] 완료 | 고유: {len(set(texts))}/{n}")
+    return texts
+
+
+# ─────────────────────────────────────────
+# IHS 캡처 (ZeroMQ 없이, 저장된 planner_tokens 사용)
+# ─────────────────────────────────────────
+
+def capture_ihs(actor: ActorModel, image: Image.Image,
+                instruction: str, planner_tokens: np.ndarray):
+    """
+    저장된 planner_tokens으로 IHS 캡처.
+    max_new_tokens=1로 빠르게 vision encoder만 실행.
+    ZeroMQ 플래너 재호출 없음.
+    """
+    planner_bin   = actor.action_tokenizer.openvla_ids_to_bin_indices(
+        np.array(planner_tokens)
+    )
+    cached_inputs = actor._apply_chat_template(image, instruction, planner_bin)
+
+    input_ids      = cached_inputs["input_ids"].to("cuda")
+    attention_mask = cached_inputs["attention_mask"].to("cuda")
+    pixel_values   = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
+    pixel_values.requires_grad_(False)
+
+    action_embeds      = actor.action_tokenizer.embed_action_tokens(
+        torch.tensor(planner_tokens, dtype=torch.long)
+    )
+    critique_token_len = cached_inputs.get("critique_token_len", 0)
+    insert_pos         = input_ids.shape[1] - critique_token_len
+
+    try:
+        actor._action_embeds_buffer[0] = action_embeds
+        actor._action_insert_pos[0]    = insert_pos
+        actor._capture_ihs             = True
+        actor._ihs_cache[0]            = None
+        with torch.no_grad():
+            actor.smol.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                max_new_tokens=1,
+                do_sample=False,
+                pad_token_id=actor.processor.tokenizer.eos_token_id
+            )
+    finally:
+        actor._action_embeds_buffer[0] = None
+        actor._action_insert_pos[0]    = None
+        actor._capture_ihs             = False
+
+    ihs = actor._ihs_cache[0]
+    del input_ids, attention_mask, pixel_values
+    torch.cuda.empty_cache()
+    return cached_inputs, ihs
+
+
+# ─────────────────────────────────────────
+# Rollout 데이터 수집
+# ─────────────────────────────────────────
+
+def collect_rollout(actor: ActorModel, env, instruction: str,
+                    n_episodes: int) -> list:
+    """
+    OpenVLA rollout 실행 → (image_np, planner_tokens, success) 수집.
+    저장 크기 최소화: numpy 이미지 + 7개 정수 + bool.
+    """
+    dataset = []
+    success_count = 0
+
+    for ep in range(n_episodes):
+        obs       = env.reset()
+        ep_steps  = []
+        success   = False
+
+        for step in range(MAX_STEPS_PER_EP):
+            image         = get_image(obs)
+            planner_tokens = actor.get_planner_action_tokens(image, instruction)
+            ep_steps.append((np.array(image), planner_tokens.copy()))
+
+            planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(planner_tokens)
+            action      = actor.action_tokenizer.bin_indices_to_continuous(planner_bin)
+            obs, _, done, info = env.step(action)
+
+            if done:
+                success = bool(info.get("success", False))
+                break
+
+        for img_np, tokens in ep_steps:
+            dataset.append((img_np, tokens, success))
+
+        success_count += int(success)
+        print(f"  ep {ep+1:2d}/{n_episodes} | steps={len(ep_steps):3d} | "
+              f"{'✓ SUCCESS' if success else '✗ FAILURE'}")
+
+    print(f"  수집 완료 | SUCCESS={success_count} FAILURE={n_episodes-success_count} "
+          f"| 총 {len(dataset)} 스텝")
+    return dataset
+
+
+# ─────────────────────────────────────────
+# SFT 스텝
 # ─────────────────────────────────────────
 
 def sft_step(actor, optimizer, cached_inputs,
              planner_tokens, target_ids, loss_mask, ihs):
-    """
-    Stage 3: 액션 토큰 7개만 cross-entropy.
-    텍스트 위치는 loss_mask=0 → 텍스트 다양성 보존.
-    """
     optimizer.zero_grad()
 
     if loss_mask.sum() < 1:
@@ -208,24 +273,53 @@ def sft_step(actor, optimizer, cached_inputs,
 
 
 # ─────────────────────────────────────────
-# 확인
+# 타겟 + 손실 마스크 생성
 # ─────────────────────────────────────────
 
-def check_generation(actor, env, instruction):
-    try:
-        obs   = env.reset()
-        image = get_image(obs)
-        with torch.no_grad():
-            (critique, action_vec, action_ids, *_) = actor.generate(
-                image=image, instruction=instruction
-            )
-        smol_start = len(actor.processor.tokenizer) - 256
-        n_action   = sum(1 for t in action_ids if smol_start <= int(t) < smol_start + 256)
-        ok = "✓" if n_action == 7 and critique else "✗"
-        print(f"  [{ok}] CRITIQUE: {(critique or '없음')[:70]}")
-        print(f"      action_tokens={n_action}/7 | {np.round(action_vec, 2)}")
-    except Exception as e:
-        print(f"  [확인 skip] {e}")
+def make_target(actor, planner_tokens, scene_text, success):
+    """
+    SUCCESS: scene_text + SUCCESS + [ACTION] 7tokens [/ACTION] + EOS
+             손실: SUCCESS 토큰부터 EOS까지 (텍스트 free)
+
+    FAILURE: scene_text + FAILURE + EOS
+             손실: FAILURE 토큰 + EOS만 (텍스트 free)
+    """
+    smol_start = len(actor.processor.tokenizer) - 256
+    tokenizer  = actor.processor.tokenizer
+    eos        = tokenizer.eos_token
+
+    if success:
+        planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(
+            np.array(planner_tokens)
+        )
+        action_str  = " ".join([f"<action_{b}>" for b in planner_bin])
+        target_text = f"{scene_text}\nSUCCESS\n\n[ACTION] {action_str} [/ACTION]{eos}"
+    else:
+        target_text = f"{scene_text}\nFAILURE{eos}"
+
+    target_ids = tokenizer(
+        target_text, return_tensors="pt", add_special_tokens=False
+    )["input_ids"]  # (1, T)
+
+    target_np = target_ids.numpy()[0]
+
+    # SUCCESS/FAILURE 토큰 위치 찾기
+    success_ids = tokenizer("SUCCESS", add_special_tokens=False)["input_ids"]
+    failure_ids = tokenizer("FAILURE", add_special_tokens=False)["input_ids"]
+    label_ids   = success_ids if success else failure_ids
+
+    # 레이블 토큰 첫 등장 위치
+    label_start = None
+    for i in range(len(target_np) - len(label_ids) + 1):
+        if list(target_np[i:i+len(label_ids)]) == label_ids:
+            label_start = i
+            break
+
+    loss_mask = np.zeros(len(target_np), dtype=np.float32)
+    if label_start is not None:
+        loss_mask[label_start:] = 1.0   # SUCCESS/FAILURE ~ EOS 전체
+
+    return target_ids, torch.FloatTensor(loss_mask)
 
 
 # ─────────────────────────────────────────
@@ -234,12 +328,12 @@ def check_generation(actor, env, instruction):
 
 def train_stage3(actor: ActorModel):
     print(f"\n{'='*60}")
-    print(f"Stage 3: 액션 추종 학습 ({NUM_STEPS} 스텝)")
-    print(f"텍스트: 자유 (loss=0) | 액션: OpenVLA 추종 (loss=1)")
+    print(f"Stage 3: 성공/실패 예측 + 액션 생성 ({EPISODES_PER_TASK * len(TASK_IDS)} 에피소드)")
+    print(f"  SUCCESS → SUCCESS 토큰 + 액션 7개 학습")
+    print(f"  FAILURE → FAILURE 토큰만 학습 (텍스트 free)")
     print(f"{'='*60}\n")
 
     load_checkpoint(actor, LOAD_PATH)
-    reset_action_lm_head(actor)
 
     trainable = list(filter(lambda p: p.requires_grad, actor.parameters()))
     try:
@@ -249,86 +343,67 @@ def train_stage3(actor: ActorModel):
     except ImportError:
         optimizer = torch.optim.AdamW(trainable, lr=LEARNING_RATE)
 
-    smol_start = len(actor.processor.tokenizer) - 256
+    # ── 데이터 수집 ────────────────────────────────────
+    all_data     = []   # (img_np, planner_tokens, success, instruction, scene_texts)
+    all_tasks    = []
 
-    task_idx = 0
-    env, instruction = make_env(TASK_IDS[task_idx])
-    obs = env.reset()
-    print(f"[태스크 {TASK_IDS[task_idx]}] {instruction[:60]}\n")
+    for task_id in TASK_IDS:
+        env, instruction = make_env(task_id)
+        print(f"\n[태스크 {task_id}] {instruction[:60]}")
 
-    scene_texts = precompute_scene_texts(actor, env, instruction)
-    obs = env.reset()
+        scene_texts = precompute_scene_texts(actor, env, instruction)
+        rollout     = collect_rollout(actor, env, instruction, EPISODES_PER_TASK)
+        env.close()
 
-    losses = []
+        for img_np, tokens, success in rollout:
+            all_data.append((img_np, tokens, success, instruction, scene_texts))
 
-    for step in range(1, NUM_STEPS + 1):
-        if step % TASK_SWITCH_EVERY == 1 and step > 1:
-            env.close()
-            task_idx = (task_idx + 1) % len(TASK_IDS)
-            env, instruction = make_env(TASK_IDS[task_idx])
-            obs = env.reset()
-            print(f"\n[태스크 전환 → {TASK_IDS[task_idx]}] {instruction[:60]}")
-            scene_texts = precompute_scene_texts(actor, env, instruction)
-            obs = env.reset()
+    total     = len(all_data)
+    n_success = sum(1 for *_, s, __, ___ in all_data if s)
+    print(f"\n수집 완료: 총 {total}스텝 | SUCCESS={n_success} FAILURE={total-n_success}")
 
-        if step % RESET_EVERY == 1 and step > 1:
-            obs = env.reset()
+    # ── 학습 ───────────────────────────────────────────
+    losses      = []
+    global_step = 0
 
-        image = get_image(obs)
+    for epoch in range(TRAIN_EPOCHS):
+        np.random.shuffle(all_data)
+        print(f"\n[Epoch {epoch+1}/{TRAIN_EPOCHS}]")
 
-        with torch.no_grad():
-            (_, _, _, planner_tokens, cached_inputs, _, _, ihs) = actor.generate(
-                image=image, instruction=instruction
+        for img_np, planner_tokens, success, instruction, scene_texts in all_data:
+            image      = Image.fromarray(img_np)
+            scene_text = scene_texts[np.random.randint(len(scene_texts))]
+
+            try:
+                cached_inputs, ihs = capture_ihs(
+                    actor, image, instruction, planner_tokens
+                )
+            except Exception as e:
+                print(f"  [IHS 캡처 실패] {e}")
+                continue
+
+            target_ids, loss_mask = make_target(
+                actor, planner_tokens, scene_text, success
             )
 
-        # 사전 수집된 텍스트에서 랜덤 선택
-        scene_text = scene_texts[np.random.randint(len(scene_texts))]
-
-        planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(
-            np.array(planner_tokens)
-        )
-        action_str  = " ".join([f"<action_{b}>" for b in planner_bin])
-        eos         = actor.processor.tokenizer.eos_token
-        target_text = f"{scene_text}\n\n[ACTION] {action_str} [/ACTION]{eos}"
-
-        target_ids = actor.processor.tokenizer(
-            target_text, return_tensors="pt", add_special_tokens=False
-        )["input_ids"]
-
-        # 액션 토큰 위치만 loss=1
-        target_np  = target_ids.numpy()[0]
-        is_action  = (target_np >= smol_start) & (target_np < smol_start + 256)
-        loss_mask  = torch.FloatTensor(is_action.astype(np.float32))
-
-        loss_val = sft_step(
-            actor, optimizer, cached_inputs,
-            planner_tokens, target_ids, loss_mask, ihs
-        )
-        losses.append(loss_val)
-
-        try:
-            planner_action = actor.action_tokenizer.bin_indices_to_continuous(
-                actor.action_tokenizer.openvla_ids_to_bin_indices(np.array(planner_tokens))
+            loss_val = sft_step(
+                actor, optimizer, cached_inputs,
+                planner_tokens, target_ids, loss_mask, ihs
             )
-            obs, _, done, _ = env.step(planner_action)
-            if done:
-                obs = env.reset()
-        except Exception:
-            obs = env.reset()
+            losses.append(loss_val)
+            global_step += 1
 
-        if step % 50 == 0:
-            valid = [l for l in losses[-50:] if l > 0]
-            avg   = float(np.mean(valid)) if valid else 0.0
-            print(f"  [Step {step:4d}/{NUM_STEPS}] action_loss={avg:.4f} | task={TASK_IDS[task_idx]}")
-        if step % 100 == 0:
-            check_generation(actor, env, instruction)
+            if global_step % 100 == 0:
+                valid = [l for l in losses[-100:] if l > 0]
+                avg   = float(np.mean(valid)) if valid else 0.0
+                print(f"  [Step {global_step:4d}] loss={avg:.4f}")
 
-    env.close()
+    # ── 저장 ───────────────────────────────────────────
     os.makedirs(SAVE_PATH, exist_ok=True)
     actor.smol.save_pretrained(SAVE_PATH)
     actor.processor.save_pretrained(SAVE_PATH)
     print(f"\n[Stage 3 완료] 저장: {SAVE_PATH}")
-    print("다음: smol_train.py (GRPO) — checkpoint 경로를 'checkpoints/sft_stage3'으로 설정")
+    print("다음: smol_train.py (GRPO)")
 
 
 def main():
