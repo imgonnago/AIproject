@@ -149,7 +149,14 @@
   > 강화학습 모델의 성능이 더 좋아지고, 성능에도 긍정적 효과를 준다고 증명됨.
   > 여기선 모델의 비판적 텍스트 생성과 7개 액션 토큰 생성 능력을 sft를 통해 학습 시킴.
 
+---
+
+**📁SFT**
+
+- **SFT**
   
+  > GRPO 학습을 들어가기 전 사전 학습을 통해 actor에게 텍스트 포멧 형식을 학습시키기 위함.
+
 ---
 
 **📁assets**
@@ -177,26 +184,30 @@
 
 ---
 
-**sft_log.txts**
-  
- > SFT 학습이 제대로 되었다는 증거
- > 비전 인코더를 사용하지 않은 오류.
+**📁logs**
 
-**sft_log2.txts**
-
-> SFT 학습 증거.
-> 비전 인코더 사용함.
+- 학습시 나왔던 로그들을 저장해둠. 어떻게 학습이 되었는지 기록용
 
 
 ## ⏬Installation
 
 torch version (qwen)
 
-`pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124`
+```
+pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124
+
+pip install requirements_qwen.txt --no-deps
+
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO
+```
 
 torch version (openvla)
 
-`pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu --index-url https://download.pytorch.org/whl/cpu`
+```
+pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu --index-url https://download.pytorch.org/whl/cpu
+
+pip install requirements_openvla.txt
+```
 
 SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방함. 
 
@@ -206,6 +217,8 @@ SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방�
 - 모델을 실행하기 전 openvla_embeddings 파일이 필요함.openvla 환경에 진입해서 
 
 ```
+git clone https://github.com/imgonnago/AIproject
+
 conda activate openvla
 
 python make_embeddings.py #embedding파일 생성.
