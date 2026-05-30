@@ -38,15 +38,15 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # ─────────────────────────────────────────
 # 설정
 # ─────────────────────────────────────────
-TASK_SUITE           = "libero_long"
+TASK_SUITE           = "libero_10"
 TASK_IDS             = [0, 1, 2, 3, 4]
-EPISODES_PER_TASK    = 8          # 태스크당 rollout 에피소드 수
-MAX_STEPS_PER_EP     = 250        # 에피소드 최대 스텝
+EPISODES_PER_TASK    = 4          # 8 → 4
+MAX_STEPS_PER_EP     = 150        # 250 → 150
 TRAIN_EPOCHS         = 3          # 수집 데이터 반복 학습
 LEARNING_RATE        = 1e-5
 IMG_HEIGHT           = 224
 IMG_WIDTH            = 224
-LOAD_PATH            = "checkpoints/sft_stage2"
+LOAD_PATH            = "checkpoints/sft_stage2_5"
 SAVE_PATH            = "checkpoints/sft_stage3"
 FALLBACK_TEXT        = "I observe the scene and evaluate the proposed action."
 
@@ -220,6 +220,9 @@ def collect_rollout(actor: ActorModel, env, instruction: str,
             planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(planner_tokens)
             action      = actor.action_tokenizer.bin_indices_to_continuous(planner_bin)
             obs, _, done, info = env.step(action)
+
+            if step % 50 == 0:
+                print(f"    step {step:3d}/{MAX_STEPS_PER_EP} ...", flush=True)
 
             if done:
                 success = bool(info.get("success", False))
