@@ -58,6 +58,7 @@
 - **4. Actor Tokenizer Process**
 
  구현한 actino tokenizer의 구조를 구체화. 각 데이터들은 각각 vision encoder, llm, projection layer를 통과하여 임베딩 형태로 변환되고, input merge와 action injection hook을 통해 같은 공간으로 투영되고 concat을 진행함. 이때 이미지와 텍스트는 smolvlm의 프로세서를 거침. 이후 트랜스포머를 통과하고 출력을 냄.
+ 
 ---
 ![Figure5](https://github.com/user-attachments/assets/24cca233-9f8b-46a6-8a42-dd81779f43d5)
 - **5. Suprevised Fine Tuning**
@@ -187,7 +188,7 @@
 > 비전 인코더 사용함.
 
 
-## PYTORCH VERSION (나머지는 requirements file 참고)
+## Installation
 
 torch version (qwen)
 
@@ -199,24 +200,22 @@ torch version (openvla)
 
 SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방함. 
 
-**모델 실행**
+## Getting Started
 ---
+
 - 모델을 실행하기 전 openvla_embeddings 파일이 필요함.openvla 환경에 진입해서 
 
-`python make_embeddings.py` embedding파일 생성.
-
-- planner와 actor의 환경이 분리되어있어, 터미널 두 개를 사용함. 터미널1 에는 openvla, 터미널2 에는 qwen 환경을 진입.
-
 ```
-conda actiavte openvla
+conda activate openvla
 
-conda activate qwen
-```
+python make_embeddings.py #embedding파일 생성.
 
-각 터미널에서 파일 실행.
-
-```
 python openvla_planner/openvla_inference_code.py
+```
+- actor 환경 진입 및 실행(SmolVLM도 qwen 환경 사용)
+
+```
+conda activate qwen
 
 #파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
 
