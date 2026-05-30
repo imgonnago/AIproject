@@ -34,7 +34,7 @@
 
 **- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
 
-## Model Figure 
+## 🖼️Model Figure 
 
 ![Figure1](https://github.com/user-attachments/assets/c6055027-b82a-41d0-9014-a3361050e986)
 - **1. Model Structure**
@@ -188,7 +188,7 @@
 > 비전 인코더 사용함.
 
 
-## Installation
+## ⏬Installation
 
 torch version (qwen)
 
