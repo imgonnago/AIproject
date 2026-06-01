@@ -306,11 +306,6 @@ class ActorModel(nn.Module):
             print(f"[Planner 오류] {response.get('error')}")
         return response["action_tokens"]
 
-
-    # ─────────────────────────────────────────
-    # 프롬프트 구성
-    # ─────────────────────────────────────────
-
     # ─────────────────────────────────────────
     # 프롬프트 헬퍼
     # ─────────────────────────────────────────
@@ -366,7 +361,6 @@ class ActorModel(nn.Module):
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
                     f"Task: {instruction}\n"
-                    f"Proposed: {action_text}\n"
                     f"Critique: {critique_text}\n"
                     f"Output corrected action tokens in this format:\n"
                     f"{planner_str}"
