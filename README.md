@@ -62,7 +62,7 @@
 ---
 ![Figure5](https://github.com/user-attachments/assets/f106f294-3e26-4129-ab98-1bde2140310e)
 - **5. Suprevised Fine Tuning**
-- 
+  
  바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 총 4개 스테이지로 구성되었고, 스테이지마다 순차적으로 학습.
 
 ## github file structure
