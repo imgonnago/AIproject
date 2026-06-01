@@ -25,7 +25,7 @@
 
 **Actor 2** : SmolVLM 500M + 4bit + LoRA + GRPO <- **(used)**
 
-**Simulator** : LIBERO (libero_10)
+**Simulator** : LIBERO (libero_spatial)
 
 
 ## 🦴Back Bone Model URL
@@ -79,7 +79,7 @@
   >zeroMQ와 통합하여 서버를 열어줌.
   >**cpu**를 사용하여 inference 할 것 이므로 cuda 사용하지 않음.
   >transformer로 로드하면 됨.
-  >모델은 **openvla-7b-finetuned-libero-10** 로 로드
+  >모델은 **openvla-7b-finetuned-libero-spatial** 로 로드
 
 - **action tokenizer**
   
