@@ -31,7 +31,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 
 NUM_STEPS         = 500
 LEARNING_RATE     = 1e-5
-TASK_SUITE        = "libero_10"
+TASK_SUITE        = "libero_spatial"
 TASK_IDS          = [0, 1, 2, 3, 4]
 TASK_SWITCH_EVERY = 100
 RESET_EVERY       = 10
@@ -229,34 +229,39 @@ def train_stage2_5(actor: ActorModel):
             scene_texts = precompute_scene_texts(actor, env, instruction)
             obs = env.reset()
             print(f"\n[태스크 전환 → {TASK_IDS[task_idx]}] {instruction[:60]}")
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
         if step % RESET_EVERY == 1 and step > 1:
             obs = env.reset()
 
         image = get_image(obs)
 
+        # Pass 1 없이 precomputed critique로 Pass 2 IHS 캡처
+        critique_text = scene_texts[np.random.randint(len(scene_texts))]
         with torch.no_grad():
-            (_, _, _, planner_tokens, cached_inputs, _, _, ihs) = actor.generate(
-                image=image, instruction=instruction
+            planner_tokens, cached_inputs, ihs = actor.capture_for_sft(
+                image, instruction, critique_text
             )
 
-        scene_text = scene_texts[np.random.randint(len(scene_texts))]
-
+        # [ACTION] 태그 없는 OpenVLA 방식
         planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(
             np.array(planner_tokens)
         )
         action_str  = " ".join([f"<action_{b}>" for b in planner_bin])
         eos         = actor.processor.tokenizer.eos_token
-        target_text = f"{scene_text}\n\n[ACTION] {action_str} [/ACTION]{eos}"
+        target_text = f"{action_str}{eos}"
 
         target_ids = actor.processor.tokenizer(
             target_text, return_tensors="pt", add_special_tokens=False
         )["input_ids"]
 
-        # 액션 토큰 7개만 loss=1
+        # 액션 토큰 7개 + EOS만 loss=1
         target_np = target_ids.numpy()[0]
+        eos_id    = actor.processor.tokenizer.eos_token_id
         is_action = (target_np >= smol_start) & (target_np < smol_start + 256)
-        loss_mask = torch.FloatTensor(is_action.astype(np.float32))
+        is_eos    = (target_np == eos_id)
+        loss_mask = torch.FloatTensor((is_action | is_eos).astype(np.float32))
 
         loss_val = sft_step(actor, optimizer, cached_inputs,
                             planner_tokens, target_ids, loss_mask, ihs)
@@ -277,6 +282,8 @@ def train_stage2_5(actor: ActorModel):
 
         if step % 100 == 0:
             check_action_tokens(actor, env, instruction)
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
     env.close()
     os.makedirs(SAVE_PATH, exist_ok=True)

@@ -5,7 +5,7 @@ import numpy as np
 import zmq
 import io
 
-MODEL_PATH = "openvla/openvla-7b-finetuned-libero-10"
+MODEL_PATH = "openvla/openvla-7b-finetuned-libero-spatial"
 
 print("프로세서 로드 중...")
 processor = AutoProcessor.from_pretrained(

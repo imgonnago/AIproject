@@ -38,7 +38,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # ─────────────────────────────────────────
 # 설정
 # ─────────────────────────────────────────
-TASK_SUITE           = "libero_10"
+TASK_SUITE           = "libero_spatial"
 TASK_IDS             = [0, 1, 2, 3, 4]
 EPISODES_PER_TASK    = 4          # 8 → 4
 MAX_STEPS_PER_EP     = 150        # 250 → 150
@@ -296,7 +296,8 @@ def make_target(actor, planner_tokens, scene_text, success):
             np.array(planner_tokens)
         )
         action_str  = " ".join([f"<action_{b}>" for b in planner_bin])
-        target_text = f"{scene_text}\nSUCCESS\n\n[ACTION] {action_str} [/ACTION]{eos}"
+        # OpenVLA 방식: SUCCESS 다음 바로 액션 토큰 7개 + EOS
+        target_text = f"{scene_text}\nSUCCESS\n{action_str}{eos}"
     else:
         target_text = f"{scene_text}\nFAILURE{eos}"
 

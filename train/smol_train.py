@@ -34,7 +34,7 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # 설정
 # ─────────────────────────────────────────
 
-TASK_SUITE      = "libero_10"
+TASK_SUITE      = "libero_spatial"
 TASK_IDS        = [0]
 NUM_EPISODES    = 60
 MAX_STEPS       = 10

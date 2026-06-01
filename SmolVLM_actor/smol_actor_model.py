@@ -311,55 +311,96 @@ class ActorModel(nn.Module):
     # 프롬프트 구성
     # ─────────────────────────────────────────
 
-    def _make_messages(
+    # ─────────────────────────────────────────
+    # 프롬프트 헬퍼
+    # ─────────────────────────────────────────
+
+    def _make_action_text(self, planner_bin_indices: np.ndarray) -> str:
+        action_vec = self.action_tokenizer.bin_indices_to_continuous(planner_bin_indices)
+        x, y, z, roll, pitch, yaw, gripper = action_vec
+        return (
+            f"x={x:+.2f}, y={y:+.2f}, z={z:+.2f}, "
+            f"roll={roll:+.2f}, pitch={pitch:+.2f}, yaw={yaw:+.2f}, "
+            f"gripper={'open' if gripper > 0 else 'close'}"
+        )
+
+    def _make_messages_pass1(
         self,
         image: Image.Image,
         instruction: str,
         planner_bin_indices: np.ndarray
     ) -> list:
         """
-        플래너 액션을 연속값 텍스트로 변환해서 프롬프트에 포함.
-
-        기존: <action_97> <action_121> ... → 모델에 의미 없는 토큰
-        변경: x=+0.03, y=+0.13, z=0.00, ... → 모델이 의미 이해 가능
-              → "팔이 오른쪽으로 가야하는데 왼쪽으로 가고 있음" 같은 비판 가능
-
-        action embedding은 여전히 hook으로 주입 (Projection 학습용).
-        텍스트 표현은 모델의 언어 이해를 위한 추가 컨텍스트.
-        출력은 여전히 [ACTION] <action_N>×7 [/ACTION] 형식.
+        Pass 1: 이미지+플래너 액션을 보고 한 문장 비판 생성.
+        출력: 순수 텍스트 (액션 토큰 없음)
         """
-        # bin_indices → 연속값 (-1.0 ~ +1.0)
-        action_vec = self.action_tokenizer.bin_indices_to_continuous(planner_bin_indices)
-        x, y, z, roll, pitch, yaw, gripper = action_vec
-
-        action_text = (
-            f"x={x:+.2f}, y={y:+.2f}, z={z:+.2f}, "
-            f"roll={roll:+.2f}, pitch={pitch:+.2f}, yaw={yaw:+.2f}, "
-            f"gripper={'open' if gripper > 0 else 'close'}"
-        )
-
-        messages = [{
+        action_text = self._make_action_text(planner_bin_indices)
+        return [{
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
                 {"type": "text", "text": (
                     f"Task: {instruction}\n"
-                    f"Proposed: {action_text}\n\n"
-                    f"Reply in this format:\n"
-                    f"CRITIQUE: [one sentence about what you see]\n\n"
-                    f"[ACTION] {' '.join([f'<action_{b}>' for b in planner_bin_indices])} [/ACTION]"
+                    f"Proposed: {action_text}\n"
+                    f"Briefly critique the proposed action in one sentence."
                 )}
             ]
         }]
-        return messages
+
+    def _make_messages_pass2(
+        self,
+        image: Image.Image,
+        instruction: str,
+        planner_bin_indices: np.ndarray,
+        critique_text: str
+    ) -> list:
+        """
+        Pass 2: 비판 텍스트를 컨텍스트로 받아 수정된 액션 토큰 생성.
+        출력: <action_N>×7 + EOS
+        """
+        action_text  = self._make_action_text(planner_bin_indices)
+        planner_str  = " ".join([f"<action_{b}>" for b in planner_bin_indices])
+        return [{
+            "role": "user",
+            "content": [
+                {"type": "image", "image": image},
+                {"type": "text", "text": (
+                    f"Task: {instruction}\n"
+                    f"Proposed: {action_text}\n"
+                    f"Critique: {critique_text}\n"
+                    f"Output corrected action tokens in this format:\n"
+                    f"{planner_str}"
+                )}
+            ]
+        }]
+
+    # 레거시 호환용 (stage_3 capture_ihs 등에서 사용)
+    def _make_messages(self, image, instruction, planner_bin_indices):
+        return self._make_messages_pass2(image, instruction, planner_bin_indices,
+                                         "I observe the scene and evaluate the proposed action.")
 
     def _apply_chat_template(
         self,
         image: Image.Image,
         instruction: str,
-        planner_bin_indices: np.ndarray
+        planner_bin_indices: np.ndarray,
+        critique_text: str = "I observe the scene and evaluate the proposed action."
     ) -> dict:
-        messages = self._make_messages(image, instruction, planner_bin_indices)
+        """Pass 2 캐시 입력 생성 (critique_token_len=0, action embeds는 끝에 삽입)."""
+        return self._apply_chat_template_pass2(image, instruction, planner_bin_indices, critique_text)
+
+    def _apply_chat_template_pass2(
+        self,
+        image: Image.Image,
+        instruction: str,
+        planner_bin_indices: np.ndarray,
+        critique_text: str
+    ) -> dict:
+        """
+        Pass 2 프롬프트 토크나이즈.
+        critique_token_len=0 → action embeds가 프롬프트 끝에 삽입됨.
+        """
+        messages = self._make_messages_pass2(image, instruction, planner_bin_indices, critique_text)
         cached = self.processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -367,30 +408,107 @@ class ActorModel(nn.Module):
             return_dict=True,
             return_tensors="pt"
         )
-
-        # "CRITIQUE: " 강제 prefix: 모델이 항상 CRITIQUE로 시작하도록 보장
-        #
-        # 최종 LLM 입력 순서:
-        #   [image | text | action_7(hook 삽입) | CRITIQUE: ] → continuation 생성
-        #
-        # hook insert_pos = input_ids.shape[1] - critique_token_len 으로
-        # action_7이 "CRITIQUE: " 바로 앞에 삽입됨 → 액션을 본 후 비판적 텍스트 생성
-        #
-        # generate(): new_tokens = "CRITIQUE: " 이후 토큰들
-        #             output_text = "CRITIQUE: " + decode(new_tokens) 로 복원
-        # sft/forward(): target = critique_text + "\n\n[ACTION] ... " (CRITIQUE: 제외)
-        critique_prefix = self.processor.tokenizer(
-            "CRITIQUE: ", return_tensors="pt", add_special_tokens=False
-        )["input_ids"]  # (1, cl)
-
-        cached["input_ids"] = torch.cat([cached["input_ids"], critique_prefix], dim=1)
-        cached["attention_mask"] = torch.cat([
-            cached["attention_mask"],
-            torch.ones(1, critique_prefix.shape[1], dtype=torch.long)
-        ], dim=1)
-        cached["critique_token_len"] = critique_prefix.shape[1]  # insert_pos 계산용
-
+        cached["critique_token_len"] = 0  # action embeds → 프롬프트 끝에 삽입
         return cached
+
+    # ─────────────────────────────────────────
+    # Pass 1: 비판 텍스트 생성
+    # ─────────────────────────────────────────
+
+    @torch.no_grad()
+    def generate_critique(
+        self,
+        image: Image.Image,
+        instruction: str,
+        planner_bin_indices: np.ndarray
+    ) -> str:
+        """
+        Pass 1: 이미지+명령어+플래너 액션 → 한 문장 비판 텍스트.
+        생성 후 VRAM 해제 → Pass 2에서 재사용 없음.
+        """
+        messages = self._make_messages_pass1(image, instruction, planner_bin_indices)
+        inputs = self.processor.apply_chat_template(
+            messages, add_generation_prompt=True,
+            tokenize=True, return_dict=True, return_tensors="pt"
+        )
+        inputs = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+
+        try:
+            out = self.smol.generate(
+                **inputs,
+                max_new_tokens=50,
+                do_sample=True,
+                temperature=0.7,
+                pad_token_id=self.processor.tokenizer.eos_token_id
+            )
+            prompt_len = inputs["input_ids"].shape[1]
+            critique = self.processor.decode(
+                out[0][prompt_len:], skip_special_tokens=True
+            ).strip()
+            del out
+        except Exception:
+            critique = ""
+
+        del inputs
+        torch.cuda.empty_cache()
+        return critique if critique else "The proposed action seems reasonable."
+
+    # ─────────────────────────────────────────
+    # SFT용 IHS 캡처 (Pass 2 형식, Pass 1 없음)
+    # ─────────────────────────────────────────
+
+    @torch.no_grad()
+    def capture_for_sft(
+        self,
+        image: Image.Image,
+        instruction: str,
+        critique_text: str
+    ) -> tuple:
+        """
+        Stage 2/2.5 SFT 전용: precomputed critique로 Pass 2 IHS 캡처.
+        Pass 1 실행 없이 바로 Pass 2 형식으로 IHS + cached_inputs 반환.
+        ZeroMQ로 planner_tokens도 함께 수집.
+        """
+        planner_action_tokens = self.get_planner_action_tokens(image, instruction)
+        planner_bin_indices   = self.action_tokenizer.openvla_ids_to_bin_indices(
+            np.array(planner_action_tokens)
+        )
+        cached_inputs = self._apply_chat_template_pass2(
+            image, instruction, planner_bin_indices, critique_text
+        )
+
+        input_ids      = cached_inputs["input_ids"].to("cuda")
+        attention_mask = cached_inputs["attention_mask"].to("cuda")
+        pixel_values   = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
+        pixel_values.requires_grad_(False)
+
+        action_embeds = self.action_tokenizer.embed_action_tokens(
+            torch.tensor(planner_action_tokens, dtype=torch.long)
+        )
+
+        try:
+            self._action_embeds_buffer[0] = action_embeds
+            self._action_insert_pos[0]    = input_ids.shape[1]  # 끝에 삽입
+            self._capture_ihs  = True
+            self._ihs_cache[0] = None
+            self.smol.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                pixel_values=pixel_values,
+                max_new_tokens=1,
+                do_sample=False,
+                pad_token_id=self.processor.tokenizer.eos_token_id
+            )
+        finally:
+            self._action_embeds_buffer[0] = None
+            self._action_insert_pos[0]    = None
+            self._capture_ihs = False
+
+        ihs = self._ihs_cache[0]
+        del input_ids, attention_mask, pixel_values
+        torch.cuda.empty_cache()
+
+        return planner_action_tokens, cached_inputs, ihs
 
 
     # ─────────────────────────────────────────
@@ -476,59 +594,55 @@ class ActorModel(nn.Module):
         max_new_tokens: int = None
     ) -> tuple:
         """
-        hook 방식 추론:
-            pixel_values + input_ids → SmolVLM2 정상 처리
-            text_model 직전 hook → action_embeds 삽입
-            → <action_N> 토큰 생성
+        두 패스 추론:
+          Pass 1: 이미지+명령어+플래너 액션 → 비판 텍스트 (VRAM 해제)
+          Pass 2: 비판 텍스트 컨텍스트 + action embeds → 수정된 액션 토큰 7개
 
-        prompt_length: input_ids.shape[1] (hook 삽입 7개는 generated_ids에 포함 안 됨)
-            generate()는 input_ids 기준으로 슬라이싱하므로 hook의 7개는 투명함
-
-        반환: 7-tuple (critique, action_vector, action_token_ids,
+        반환: 8-tuple (critique, action_vector, action_token_ids,
                         planner_action_tokens, cached_inputs,
-                        new_tokens(CPU), parsing_failed)
+                        new_tokens(CPU), parsing_failed, image_hidden_states)
         """
         if max_new_tokens is None:
             max_new_tokens = self.vram_cfg["max_new_tokens"]
 
         planner_action_tokens = self.get_planner_action_tokens(image, instruction)
-        planner_bin_indices   = self.action_tokenizer.openvla_ids_to_bin_indices(planner_action_tokens)
+        planner_bin_indices   = self.action_tokenizer.openvla_ids_to_bin_indices(
+            planner_action_tokens
+        )
 
-        cached_inputs = self._apply_chat_template(image, instruction, planner_bin_indices)
+        # ── Pass 1: 비판 텍스트 생성 ─────────────────────
+        critique = self.generate_critique(image, instruction, planner_bin_indices)
+        # generate_critique() 내부에서 VRAM 해제 완료
+
+        # ── Pass 2: 수정된 액션 토큰 생성 ────────────────
+        cached_inputs = self._apply_chat_template_pass2(
+            image, instruction, planner_bin_indices, critique
+        )
 
         input_ids      = cached_inputs["input_ids"].to("cuda")
         attention_mask = cached_inputs["attention_mask"].to("cuda")
         pixel_values   = cached_inputs["pixel_values"].to("cuda", dtype=torch.bfloat16).detach()
         pixel_values.requires_grad_(False)
 
-        # generate()는 no_grad이므로 gradient 없음
-        # forward()에서 동일한 embed_action_tokens()가 gradient와 함께 실행됨
         action_embeds = self.action_tokenizer.embed_action_tokens(
             torch.tensor(planner_action_tokens, dtype=torch.long)
-        )  # (1, 7, 960)
+        )
 
-        # "CRITIQUE: " 앞에 action_7을 삽입
-        # [image | text | action_7 | CRITIQUE: ] → continuation 생성
-        # generate/forward/sft 모두 동일한 insert_pos 사용 → 학습-추론 일관성 보장
-        critique_token_len = cached_inputs.get("critique_token_len", 0)
-        insert_pos         = input_ids.shape[1] - critique_token_len
-
-        # generated_ids 슬라이싱용: hook의 7개는 token ID에 포함 안 됨
-        # new_tokens = "CRITIQUE: " 이후 생성된 continuation 토큰들
+        # critique_token_len=0 → action embeds는 프롬프트 끝에 삽입
+        insert_pos    = input_ids.shape[1]
         prompt_length = input_ids.shape[1]
 
         try:
             self._action_embeds_buffer[0] = action_embeds
-            self._action_insert_pos[0]    = insert_pos  # "CRITIQUE: " 앞에 action_7 삽입
-            self._capture_ihs = True               # connector hook 캡처 활성화
+            self._action_insert_pos[0]    = insert_pos
+            self._capture_ihs  = True
             self._ihs_cache[0] = None
             generated_ids = self.smol.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 pixel_values=pixel_values,
                 max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=0.7,
+                do_sample=False,
                 pad_token_id=self.processor.tokenizer.eos_token_id
             )
         finally:
@@ -536,28 +650,21 @@ class ActorModel(nn.Module):
             self._action_insert_pos[0]    = None
             self._capture_ihs = False
 
-        # connector hook이 캡처한 image features
-        # → inputs_merger가 기대하는 정확한 형식 보장 → training forward()에서 재사용
         image_hidden_states = self._ihs_cache[0]
 
         del input_ids, attention_mask, pixel_values
         torch.cuda.empty_cache()
 
-        # hook 삽입 7개는 generated_ids에 없으므로 input_ids 길이 기준 슬라이싱
-        new_tokens  = generated_ids[0][prompt_length:]
+        new_tokens = generated_ids[0][prompt_length:]
         del generated_ids
         torch.cuda.empty_cache()
 
-        # new_tokens은 "CRITIQUE: " 이후 토큰들이므로 앞에 복원
-        # _parse_critique(), _parse_and_decode_action() 모두 정상 동작
-        output_text = "CRITIQUE: " + self.processor.decode(new_tokens, skip_special_tokens=False)
+        output_text = self.processor.decode(new_tokens, skip_special_tokens=False)
         print("=" * 50)
-        print(f"[generate] {output_text}")
+        print(f"[Pass 1] CRITIQUE: {critique[:80]}")
+        print(f"[Pass 2] ACTION:   {output_text[:100]}")
 
-        critique = self._parse_critique(output_text)
-        action_vector, action_token_ids, parsing_failed = self._parse_and_decode_action(
-            new_tokens
-        )
+        action_vector, action_token_ids, parsing_failed = self._parse_and_decode_action(new_tokens)
         self._log_modification(planner_bin_indices, action_token_ids)
 
         return (critique, action_vector, action_token_ids,
@@ -570,14 +677,8 @@ class ActorModel(nn.Module):
     # ─────────────────────────────────────────
 
     def _parse_critique(self, text: str) -> str:
-        try:
-            m = re.search(r"\[CRITIQUE\](.*?)(\[\/CRITIQUE\]|$)", text, re.DOTALL | re.IGNORECASE)
-            if m: return m.group(1).strip()
-            m = re.search(r"CRITIQUE:\s*(.+?)(?=\[ACTION\]|$)", text, re.DOTALL | re.IGNORECASE)
-            if m: return m.group(1).strip()
-        except Exception:
-            pass
-        return ""
+        # Pass 1 출력은 순수 텍스트이므로 그대로 반환
+        return text.strip() if text else ""
 
     def _parse_and_decode_action(self, new_tokens: torch.Tensor) -> tuple:
         """token ID 범위로 <action_N> 탐지."""
