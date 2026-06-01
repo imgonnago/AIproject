@@ -14,17 +14,21 @@
   <img src="https://img.shields.io/badge/Python-3.10-brightgreen?style=flat-square&label=Python&labelColor=%23eeeeee&color=%2355adf4"height="40"/>
 </a>
 
+## 🔎INTRODUCTION
+
+최근 VLA모델의 많은 연구로 (VLA + 재평가를 통한 강화학습) 모델이 많이 나와있음. 하지만 대부분의 연구들의 재평가 구조는 사후학습이 대부분. 본 프로젝트에서는 사후 재평가가 아닌 행동 전 재평가를 통해 액션에 대한 품질 개선을 목표로 함. 인간은 어떤 행동을 하기 전 짧은 시간동안 내가 하는 행동이 맞는 행동인지 한 번 더 생각을 하고 그에 따른 행동 개선을 함. 이를 로봇에도 적용시킨다면 품질 좋은 성능이 나올것을 기대함. 본 프로젝트에선 듀얼 시스템을 적용시킴. 주체를 planner, actor 두 개로 나눠서 생각을 두 번 하도록 설계함. planner는 첫번째 환경에 대해 기초 액션을 설계. actor는 planner의 기초 액션에 대해 텍스트를 통해 비판하고 그에 따른 액션 수정을 GRPO 강화학습을 적용하여 학습함. 인간의 방식인 '행동 전 재평가 후 경험을 통한 학습' 을 모방하고 텍스트를 통해 모델이 어떤 생각으로 행동을 수정했는지 직관적으로 확인이 가능함. 자세한 모델 구조는 아래 Figure를 참고.
+
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
 
 **Actor 1** : Qwen2.5VL 3B + 4bit + LoRA + GRPO
 
-**Actor 2** : SmolVLM 500M + 4bit + LoRA + GRPO <- **(use)**
+**Actor 2** : SmolVLM 500M + 4bit + LoRA + GRPO <- **(used)**
 
 **Simulator** : LIBERO (libero_10)
 
 
-## Back Bone Model URL
+## 🦴Back Bone Model URL
 
 **- OpenVLA** : [openvla](https://github.com/openvla/openvla.git)
 
@@ -33,10 +37,6 @@
 **- SmolVLM** : [SmolVLM](https://github.com/huggingface/smollm/tree/main)
 
 **- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
-
-## Project INTRODUCTION
-
-
 
 ## 🖼️Model Figure 
 
@@ -69,7 +69,7 @@
   
  바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 총 4개 스테이지로 구성되었고, 스테이지마다 순차적으로 학습.
 
-## github file structure
+## 👷github file structure
 
 **📁openvla_planner**
 
@@ -215,7 +215,7 @@ pip install requirements_openvla.txt
 
 SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방함. 
 
-## Getting Started
+## 🏁Getting Started
 ---
 
 - 모델을 실행하기 전 openvla_embeddings 파일이 필요함.openvla 환경에 진입해서 
@@ -239,7 +239,7 @@ conda activate qwen
 python train/train.py
 ```
 
-## 기타 설정
+## ⚙️기타 설정
 ---
 
 모델 실행시 vram 사용량과 train log를 기록할 수 있는 코드.
