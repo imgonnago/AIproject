@@ -18,6 +18,10 @@
 
 최근 VLA모델의 많은 연구로 (VLA + 재평가를 통한 강화학습) 모델이 많이 나와있음. 하지만 대부분의 연구들의 재평가 구조는 사후학습이 대부분. 본 프로젝트에서는 사후 재평가가 아닌 행동 전 재평가를 통해 액션에 대한 품질 개선을 목표로 함. 인간은 어떤 행동을 하기 전 짧은 시간동안 내가 하는 행동이 맞는 행동인지 한 번 더 생각을 하고 그에 따른 행동 개선을 함. 이를 로봇에도 적용시킨다면 품질 좋은 성능이 나올것을 기대함. 본 프로젝트에선 듀얼 시스템을 적용시킴. 주체를 planner, actor 두 개로 나눠서 생각을 두 번 하도록 설계함. planner는 첫번째 환경에 대해 기초 액션을 설계. actor는 planner의 기초 액션에 대해 텍스트를 통해 비판하고 그에 따른 액션 수정을 GRPO 강화학습을 적용하여 학습함. 인간의 방식인 '행동 전 재평가 후 경험을 통한 학습' 을 모방하고 텍스트를 통해 모델이 어떤 생각으로 행동을 수정했는지 직관적으로 확인이 가능함. 자세한 모델 구조는 아래 Figure를 참고.
 
+**planner** 의 출력은 (ex)action tokens: [31878 31865 31849 31957 31873 31857] 와 같이 액션 토큰 ID
+
+**actor** 의 출력은 (ex)ctitique: planner action is correct / (ex)action: <actoin14><actoin244><actoin215><actoin148><actoin147><actoin156><actoin10><end_of_utterance> 
+
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
 
@@ -25,7 +29,7 @@
 
 **Actor 2** : SmolVLM 500M + 4bit + LoRA + GRPO <- **(used)**
 
-**Simulator** : LIBERO (libero_10)
+**Simulator** : LIBERO (libero_spatial)
 
 
 ## 🦴Back Bone Model URL
@@ -79,7 +83,7 @@
   >zeroMQ와 통합하여 서버를 열어줌.
   >**cpu**를 사용하여 inference 할 것 이므로 cuda 사용하지 않음.
   >transformer로 로드하면 됨.
-  >모델은 **openvla-7b-finetuned-libero-10** 로 로드
+  >모델은 **openvla-7b-finetuned-libero-spatial** 로 로드
 
 - **action tokenizer**
   
