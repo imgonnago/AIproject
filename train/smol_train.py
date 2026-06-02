@@ -35,9 +35,9 @@ from SmolVLM_actor.smol_actor_model import ActorModel
 # ─────────────────────────────────────────
 
 TASK_SUITE      = "libero_spatial"
-TASK_IDS        = [0]
+TASK_IDS        = [2]
 NUM_EPISODES    = 60
-MAX_STEPS       = 10
+MAX_STEPS       = 50
 IMG_HEIGHT      = 224
 IMG_WIDTH       = 224
 SAVE_PATH       = "checkpoints/smol_grpo"
@@ -157,7 +157,8 @@ def reward_fn(
             reward -= 0.3
             reward_parts.append("critique없음(-0.3)")
         else:
-            reward_parts.append("critique있음(+0)")
+            reward = 0.2  # critique 텍스트 있으면 기본 보상 +0.2
+            reward_parts.append("critique있음(+0.2)")
 
         # ── 플래너 편차 보상: 두 그룹 간 자연스러운 차이 생성 ────────
         # deviation < 0.3: 플래너 거의 그대로 → 보수적 행동 보상
@@ -166,8 +167,8 @@ def reward_fn(
             deviation = float(np.linalg.norm(action_vector - planner_action))
             success   = info.get("success", False)
             if deviation < 0.3:
-                reward += 0.1
-                reward_parts.append("planner유지(+0.1)")
+                reward += 0.2
+                reward_parts.append("planner유지(+0.2)")
             elif deviation > 1.0 and not success:
                 reward -= 0.1
                 reward_parts.append("planner이탈(-0.1)")
@@ -236,7 +237,7 @@ def collect_rollout(actor: ActorModel, env, instruction: str) -> list:
                     image=image, instruction=instruction
                 )
 
-            print(f"  [G{g+1} S{step+1}] {critique[:60] if critique else '(없음)'}")
+            print(f"  [G{g+1} S{step+1}] {critique if critique else '(없음)'}")
             print(f"  [G{g+1} S{step+1}] action: {np.round(action_vector, 3)}")
             print("=" * 50)
 
@@ -455,6 +456,7 @@ def main():
 
     actor = ActorModel()
     actor.smol.gradient_checkpointing_enable()
+    actor.load_and_scale_checkpoint("checkpoints/sft_stage2_5")
     log_vram("모델 로드 후")
 
     all_stats = []
