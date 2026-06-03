@@ -267,7 +267,7 @@
   "fake_image_token": "<fake_token_around_image>",
   "global_image_token": "<global-img>",
   "image_token": "<image>",
-  "is_local": false,
+  "is_local": true,
   "legacy": false,
   "local_files_only": false,
   "model_max_length": 8192,

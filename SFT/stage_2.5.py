@@ -30,7 +30,7 @@ from libero.libero.envs import OffScreenRenderEnv
 from SmolVLM_actor.smol_actor_model import ActorModel
 
 NUM_STEPS         = 800
-LEARNING_RATE     = 5e-5
+LEARNING_RATE     = 2e-4
 TASK_SUITE        = "libero_spatial"
 TASK_IDS          = [0, 1, 2, 3, 4]
 TASK_SWITCH_EVERY = 100
@@ -183,7 +183,7 @@ def check_action_tokens(actor, env, instruction):
         n_action   = sum(1 for t in action_ids if smol_start <= int(t) < smol_start + 256)
         ok = "✓" if n_action == 7 else "✗"
         print(f"  [{ok}] action_tokens={n_action}/7")
-        print(f"       CRITIQUE: {(critique or '없음')[:80]}")
+        print(f"       CRITIQUE: {(critique or '없음')}")
         if n_action == 7:
             print(f"       vec: {np.round(action_vec, 2)}")
     except Exception as e:
@@ -289,6 +289,12 @@ def train_stage2_5(actor: ActorModel):
     os.makedirs(SAVE_PATH, exist_ok=True)
     actor.smol.save_pretrained(SAVE_PATH)
     actor.processor.save_pretrained(SAVE_PATH)
+    # action token 임베딩 별도 저장
+    torch.save({
+        'input_embeddings':  actor.smol.get_input_embeddings().weight.data[-256:].cpu(),
+        'output_embeddings': actor.smol.get_output_embeddings().weight.data[-256:].cpu(),
+    }, "checkpoints/sft_stage2_5/action_embeddings.pt")
+    print("[action_embeddings] 별도 저장 완료")
     print(f"\n[Stage 2.5 완료] 저장: {SAVE_PATH}")
     print("다음: smol_sft_stage3.py")
 
