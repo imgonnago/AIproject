@@ -30,7 +30,7 @@
 
  - **planner** 의 출력은 (ex)action tokens: [31878 31865 31849 31957 31873 31857] 와 같이 액션 토큰 ID
 
- - **actor** 의 출력은 (ex)ctitique: planner action is correct / (ex)action: <actoin14><actoin244><actoin215><actoin148><actoin147><actoin156><actoin10><end_of_utterance> 
+ - **actor** 의 출력은 critique: The arm needs to move left to reach the bowl. / action: <action_98> <action_149> <action_88> <action_68> <action_100> <action_174> <action_127>
 
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
