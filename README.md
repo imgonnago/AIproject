@@ -67,20 +67,26 @@
  모델의 전체적 프로세스를 그림으로 표현. planner는 이미지와 텍스트를 openvla 자체 llm과 vit로 처리한 뒤 action token 추론을 통해 action token id를 내보냄. actor는 이미지와 텍스트를 smolvlm 자체 llm과 vit로 처리. planner에서 받아온 action token은 openvla에서 가져온 action embedding table(frozen)을 통해 임베딩으로 변환. 이후 projection layer를 통해 smolvlm의 임베딩 차원으로 변환하여 processor와 concat함. 이때 smolvlm의 tokenizer에는 openvla의 256개 action token이 add 되어있음. 이를 과정을 거쳐 transformer에서 attention 연산을 한 뒤 디토크나이저에서 텍스트를, action token은 action vector의 형태로 로봇으로 들어가고 행동을 함. 
  
 ---
-![Figure3](https://github.com/user-attachments/assets/e5adbf70-5ef6-4e22-94d6-8828ed1dc6be)
-- **3. FLow Chart**
+![Figure3](https://github.com/user-attachments/assets/cf47ba2e-f4df-4c42-9f32-b77c0ebf5a60)
+- **3. Projection Layer**
+
+  Openvla Embedding(4096) 차원을 Smolvlm embedding(960) 차원으로 맞춰주는 역할. projection의 구조는 LLaVA의 projection Layer를 기반으로 가져옴.
+
+---
+![Figure4](https://github.com/user-attachments/assets/e5adbf70-5ef6-4e22-94d6-8828ed1dc6be)
+- **4. FLow Chart**
 
  모델의 플로우 차트. 모델에서의 전체적인 데이터의 흐름을 표현. planner와 actor의 구조는 앞서 설명한 과정과 같아서 생략. actor와 planner에서 사용하는 이미지, 텍스트 데이터들은 모두 LIBERO 환경에서 수집됨. zeroMQ를 통해 actor가 planner 서버로 넘기는 구조. 위에 actor action tokenizer init 과정에서 256개 액션 토큰을 openvla에서 가져와 add -> action embedding table -> resieze -> projection layer 과정으로 tokenizer를 초기화 시킴. 아래 GRPO trian 과정은 RLinf의 프레임워크를 반영. collect rollout 에서 libero 환경에서의 데이터들을 그룹 사이즈만큼 수집. 이 과정에서 비판적 텍스트와 action token을 추론하여 액션을 수행하고 그에 따른 reward와 loss등을 계산하고 가중치 업데이트를 compute 과정에서 수행. 이후 이를 통해 LoRA를 학습시킴. 
  
 ---
-![Figure4](https://github.com/user-attachments/assets/1c0fbf23-fe96-475a-8827-3fd545224f3e)
-- **4. Actor Tokenizer Process**
+![Figure5](https://github.com/user-attachments/assets/1c0fbf23-fe96-475a-8827-3fd545224f3e)
+- **5. Actor Tokenizer Process**
 
  구현한 actino tokenizer의 구조를 구체화. 각 데이터들은 각각 vision encoder, llm, projection layer를 통과하여 임베딩 형태로 변환되고, input merge와 action injection hook을 통해 같은 공간으로 투영되고 concat을 진행함. 이때 이미지와 텍스트는 smolvlm의 프로세서를 거침. 이후 트랜스포머를 통과하고 출력을 냄.
  
 ---
-![Figure5](https://github.com/user-attachments/assets/f106f294-3e26-4129-ab98-1bde2140310e)
-- **5. Suprevised Fine Tuning**
+![Figure6](https://github.com/user-attachments/assets/f106f294-3e26-4129-ab98-1bde2140310e)
+- **6. Suprevised Fine Tuning**
   
  바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 총 4개 스테이지로 구성되었고, 스테이지마다 순차적으로 학습.
 
