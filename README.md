@@ -1,7 +1,7 @@
 <h1>AIproject : 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발</h1> 
 
-> OpenVLA(Planner)와 Qwen2.5-VL(Actor)을 결합한 듀얼 시스템 VLA(Vision-Language-Action) 모델.
-> Planner가 생성한 action을 Actor가 **비판적으로 재평가**하여 조작 성능을 개선하는 구조를 제안하고 구현했습니다.
+> OpenVLA(Planner)와 SmolVLM 500B(Actor)을 결합한 듀얼 시스템 VLA(Vision-Language-Action) 모델.
+> Planner가 생성한 action을 Actor가 **비판적으로 재평가**하여 조작 성능을 개선하는 구조를 제안하고 구현함.
 
 **Critical text And Dual System Vision Language Action Model(CADS-VLA)**
 
@@ -20,10 +20,10 @@
 ## 🔎INTRODUCTION
 
 기존 단일 VLA 모델은 시각·언어 입력으로부터 곧장 action을 생성하지만,
-생성한 action이 적절한지 **스스로 검토하는 단계가 없습니다**. 그 결과
-장기 과제(long-horizon task)에서 한 번의 잘못된 판단이 전체 실패로 이어지기 쉽습니다.
+생성한 action이 적절한지 **스스로 검토하는 단계가 없음**. 그 결과
+장기 과제(long-horizon task)에서 한 번의 잘못된 판단이 전체 실패로 이어지기 쉬움.
 
-본 프로젝트는 이를 **역할 분리**로 해결합니다.
+본 프로젝트는 이를 **역할 분리**로 해결.
 
 - **Planner (OpenVLA)** — 1차 action을 빠르게 제안
 - **Actor (Qwen2.5-VL)** — Planner의 제안을 비판적 재평가 텍스트와 함께 검토하고 교정
@@ -42,17 +42,8 @@
 | GRPO 강화학습 | ⬜ 미진행 (코드는 구현, 대규모 학습 미실행) |
 | LIBERO-long 정량 평가 | ⬜ 미진행 (컴퓨팅 자원 제약) |
 
-> 즉, **"끝까지 동작하는 시스템을 만들고, 핵심 학습 단계가 의도대로 작동함을 검증한"** 단계입니다.
-> 정량적 벤치마크 결과는 향후 과제입니다.
-
-| 항목 | 내용 |
-|------|------|
-| **목표** | 단일 VLA 모델의 한계를 두 모델 협업(Planner-Actor)으로 보완 |
-| **핵심 아이디어** | Planner의 action을 Actor가 비판적 재평가 텍스트로 검토 후 교정 |
-| **Planner** | OpenVLA-7B (LIBERO-10 fine-tuned) · 4bit · Frozen · CPU inference |
-| **Actor** | Qwen2.5-VL-3B · 4bit · LoRA · (학습 계획: SFT → GRPO) |
-| **연결** | ZeroMQ 기반 프로세스 간 action token 통신 |
-| **평가 환경** | LIBERO-long 벤치마크 (예정) |
+> 즉, **"끝까지 동작하는 시스템을 만들고, 핵심 학습 단계가 의도대로 작동함을 검증한"** 단계.
+> 정량적 벤치마크 결과는 향후 과제임.
 
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
@@ -110,6 +101,28 @@
 - **6. Suprevised Fine Tuning**
   
  바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 총 4개 스테이지로 구성되었고, 스테이지마다 순차적으로 학습.
+
+---
+**핵심 기술 과제와 해결**
+
+| 문제 | 해결 | 상태 |
+|------|------|------|
+| OpenVLA(4096차원 action 임베딩)와 Qwen 토크나이저의 임베딩 공간 불일치 | LLaVA projection layer를 참고한 **projection layer** 구현으로 차원 정합 | ✅ 구현 |
+| Qwen LLM이 action을 토큰으로 다루지 못함 | LLM vocabulary에 OpenVLA의 **action token 256개 추가** | ✅ 구현 |
+| 두 모델이 독립 프로세스/환경에서 동작 | **ZeroMQ**로 프로세스 간 action token 중계 | ✅ 구현 |
+| 제한된 자원에서 7B+3B 모델 동시 운용 | 4bit 양자화 · Planner Frozen · Actor LoRA로 메모리 효율화 | ✅ 적용 |
+| Actor가 action token과 자연어를 함께 출력해야 함 | SFT로 두 출력 능력 학습 | 🟡 정성 확인 |
+
+## 검증 결과 (Validation)
+
+정량 벤치마크(success rate)는 미진행이나, 구현이 의도대로 동작함을 다음과 같이 정성적으로 확인함.
+
+- **Actor의 action token 출력** — SFT 이후 Actor가 추가된 256개 action token을 정상적으로 생성함을 확인
+- **텍스트 생성 능력 유지** — action token 학습 후에도 자연어 출력 능력이 유지됨을 확인
+- **End-to-end 파이프라인** — Planner → ZeroMQ → Actor로 이어지는 데이터 흐름이 동작함을 확인
+
+> 정량 평가(LIBERO-long success rate, baseline 대비 비교)와 GRPO 학습은
+> 충분한 컴퓨팅 자원 확보 후 진행할 향후 과제입니다.
 
 ## 👷코드 구조 
 
@@ -237,19 +250,17 @@
 
 ## ⏬환경 구성
 
-torch version (qwen)
-
 ```
+#torch version (qwen)
+
 pip install torch torchvision torchaudio \ --index-url https://download.pytorch.org/whl/cu124
 
 pip install requirements_qwen.txt --no-deps
 
 git clone https://github.com/Lifelong-Robot-Learning/LIBERO
-```
 
-torch version (openvla)
+#torch version (openvla)
 
-```
 pip install torch==2.12.0+cpu torchvision==0.27.0+cpu torchaudio==2.11.0+cpu --index-url https://download.pytorch.org/whl/cpu
 
 pip install requirements_openvla.txt
@@ -257,7 +268,7 @@ pip install requirements_openvla.txt
 
 SmolVLM 모델 실행시 미리 구성한 qwen 환경에서 실행해도 무방함. 
 
-## 🏁Getting Started
+## 🏁실행 방법 (Getting Started)
 ---
 
 - 모델을 실행하기 전 openvla_embeddings 파일이 필요함.openvla 환경에 진입해서 
