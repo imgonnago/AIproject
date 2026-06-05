@@ -36,7 +36,7 @@
 |------|------|
 | 듀얼 시스템 아키텍처 설계 | ✅ 완료 |
 | Planner(OpenVLA) 추론 파이프라인 | ✅ 완료 |
-| Actor(Qwen2.5-VL) 구성 (토크나이저 확장 · projection layer) | ✅ 완료 |
+| Actor(SmolVLM 500B) 구성 (토크나이저 확장 · projection layer) | ✅ 완료 |
 | ZeroMQ 기반 프로세스 간 통신 | ✅ 완료 |
 | **SFT — Actor의 action token 출력 + 텍스트 생성 능력** | 🟡 일부 학습, **정성적 동작 확인 완료** |
 | GRPO 강화학습 | ⬜ 미진행 (코드는 구현, 대규모 학습 미실행) |
@@ -107,10 +107,10 @@
 
 | 문제 | 해결 | 상태 |
 |------|------|------|
-| OpenVLA(4096차원 action 임베딩)와 Qwen 토크나이저의 임베딩 공간 불일치 | LLaVA projection layer를 참고한 **projection layer** 구현으로 차원 정합 | ✅ 구현 |
-| Qwen LLM이 action을 토큰으로 다루지 못함 | LLM vocabulary에 OpenVLA의 **action token 256개 추가** | ✅ 구현 |
+| OpenVLA(4096차원 action 임베딩)와 Smol 토크나이저의 임베딩 공간 불일치 | LLaVA projection layer를 참고한 **projection layer** 구현으로 차원 정합 | ✅ 구현 |
+| Smol LLM이 action을 토큰으로 다루지 못함 | LLM vocabulary에 OpenVLA의 **action token 256개 추가** | ✅ 구현 |
 | 두 모델이 독립 프로세스/환경에서 동작 | **ZeroMQ**로 프로세스 간 action token 중계 | ✅ 구현 |
-| 제한된 자원에서 7B+3B 모델 동시 운용 | 4bit 양자화 · Planner Frozen · Actor LoRA로 메모리 효율화 | ✅ 적용 |
+| 제한된 자원에서 7B+500B 모델 동시 운용 | 4bit 양자화 · Planner Frozen · Actor LoRA로 메모리 효율화 | ✅ 적용 |
 | Actor가 action token과 자연어를 함께 출력해야 함 | SFT로 두 출력 능력 학습 | 🟡 정성 확인 |
 
 ## 검증 결과 (Validation)
