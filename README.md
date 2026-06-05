@@ -1,5 +1,8 @@
 <h1>AIproject : 비판적 재평가 텍스트를 통한 planner Model 성능 개선 듀얼 시스템 VLA 모델 개발</h1> 
 
+> OpenVLA(Planner)와 Qwen2.5-VL(Actor)을 결합한 듀얼 시스템 VLA(Vision-Language-Action) 모델.
+> Planner가 생성한 action을 Actor가 **비판적으로 재평가**하여 조작 성능을 개선하는 구조를 제안하고 구현했습니다.
+
 **Critical text And Dual System Vision Language Action Model(CADS-VLA)**
 
 <a href="https://pytorch.org/get-started/locally/">
@@ -16,22 +19,40 @@
 
 ## 🔎INTRODUCTION
 
-- **Problem Definition**
-  
-기존의 연구들에는 단일 모델의 직접 액션 생성, 단일 모델 내 추론 강화, 그리고 듀얼 시스템의 흐름으로 발전하고 있다. 하지만 이들은 모두 특정 태스크와 환경에 한정되어있고, 새로운 환경을 만났을 때 성능을 여전히 보장할 수 없음.
-또한 모델의 성능을 끌어올리기 위해 재학습을 실시할 경우 재학습 비용과 시간이 많이 들어감. 또한 비판적 텍스트의 주체가 단일 모델 본인이고, 비판의 주체도 단일 모델 본인임. 
-  
-  본 프로젝트에서의 문제 정의 및 목표는
-  
-  *기존에 학습된 대형 VLA planner를 고정한 채로 경량 모델이 planner의 액션 제안을 외부에서 비판적으로 평가하고 수정할 수 있는가? 즉 planner와 actor를 분리함으로써 재학습 비용 없이 기존 VLA의 성능을 개선할 수 있는가*  임.
-  
----
+기존 단일 VLA 모델은 시각·언어 입력으로부터 곧장 action을 생성하지만,
+생성한 action이 적절한지 **스스로 검토하는 단계가 없습니다**. 그 결과
+장기 과제(long-horizon task)에서 한 번의 잘못된 판단이 전체 실패로 이어지기 쉽습니다.
 
- - 최근 VLA모델의 많은 연구로 (VLA + 재평가를 통한 강화학습) 모델이 많이 나와있음. 하지만 대부분의 연구들의 재평가 구조는 사후학습이 대부분. 본 프로젝트에서는 사후 재평가가 아닌 행동 전 재평가를 통해 액션에 대한 품질 개선을 목표로 함. 인간은 어떤 행동을 하기 전 짧은 시간동안 내가 하는 행동이 맞는 행동인지 한 번 더 생각을 하고 그에 따른 행동 개선을 함. 이를 로봇에도 적용시킨다면 품질 좋은 성능이 나올것을 기대함. 본 프로젝트에선 듀얼 시스템을 적용시킴. 주체를 planner, actor 두 개로 나눠서 생각을 두 번 하도록 설계함. planner는 첫번째 환경에 대해 기초 액션을 설계. actor는 planner의 기초 액션에 대해 텍스트를 통해 비판하고 그에 따른 액션 수정을 GRPO 강화학습을 적용하여 학습함. 인간의 방식인 '행동 전 재평가 후 경험을 통한 학습' 을 모방하고 텍스트를 통해 모델이 어떤 생각으로 행동을 수정했는지 직관적으로 확인이 가능함. 자세한 모델 구조는 아래 Figure를 참고.
+본 프로젝트는 이를 **역할 분리**로 해결합니다.
 
- - **planner** 의 출력은 (ex)action tokens: [31878 31865 31849 31957 31873 31857] 와 같이 액션 토큰 ID
+- **Planner (OpenVLA)** — 1차 action을 빠르게 제안
+- **Actor (Qwen2.5-VL)** — Planner의 제안을 비판적 재평가 텍스트와 함께 검토하고 교정
 
- - **actor** 의 출력은 critique: The arm needs to move left to reach the bowl. / action: <action_98> <action_149> <action_88> <action_68> <action_100> <action_174> <action_127>
+이는 사람의 "생각 → 점검 → 실행" 흐름을 모방한 듀얼 시스템 구조입니다.
+
+이 프로젝트는 **모델 아키텍처와 파이프라인 구현을 완료**했으며, 학습은 자원(컴퓨팅·시간) 제약으로 다음 단계까지 진행했습니다.
+
+| 단계 | 상태 |
+|------|------|
+| 듀얼 시스템 아키텍처 설계 | ✅ 완료 |
+| Planner(OpenVLA) 추론 파이프라인 | ✅ 완료 |
+| Actor(Qwen2.5-VL) 구성 (토크나이저 확장 · projection layer) | ✅ 완료 |
+| ZeroMQ 기반 프로세스 간 통신 | ✅ 완료 |
+| **SFT — Actor의 action token 출력 + 텍스트 생성 능력** | 🟡 일부 학습, **정성적 동작 확인 완료** |
+| GRPO 강화학습 | ⬜ 미진행 (코드는 구현, 대규모 학습 미실행) |
+| LIBERO-long 정량 평가 | ⬜ 미진행 (컴퓨팅 자원 제약) |
+
+> 즉, **"끝까지 동작하는 시스템을 만들고, 핵심 학습 단계가 의도대로 작동함을 검증한"** 단계입니다.
+> 정량적 벤치마크 결과는 향후 과제입니다.
+
+| 항목 | 내용 |
+|------|------|
+| **목표** | 단일 VLA 모델의 한계를 두 모델 협업(Planner-Actor)으로 보완 |
+| **핵심 아이디어** | Planner의 action을 Actor가 비판적 재평가 텍스트로 검토 후 교정 |
+| **Planner** | OpenVLA-7B (LIBERO-10 fine-tuned) · 4bit · Frozen · CPU inference |
+| **Actor** | Qwen2.5-VL-3B · 4bit · LoRA · (학습 계획: SFT → GRPO) |
+| **연결** | ZeroMQ 기반 프로세스 간 action token 통신 |
+| **평가 환경** | LIBERO-long 벤치마크 (예정) |
 
 ---
 **Planner** : OpenVLA 7B fine tuning + 4bit, Frozen, CPU inference 
@@ -53,7 +74,7 @@
 
 **- LIBERO** : [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO.git)
 
-## 🖼️Model Figure 
+## 🖼️아키텍쳐
 
 ![Figure1](https://github.com/user-attachments/assets/edbb073d-d40e-452a-873f-a4de54bc41b6)
 - **1. Model Structure**
@@ -90,7 +111,7 @@
   
  바로 모델 학습으로 들어가면 모델이 텍스트 포멧과 액션토큰을 어떻게 내보내는지 알지 못함. GRPO 학습에서 계속 패널티를 받고, 수렴하지 못하는 문제 발생 가능. 그래서 SFT를 통해 기본적인 베이스 능력을 학습시킨 뒤 비판적 텍스트와 그에 따른 액션 토큰 수정을 하도록 하기 위함. 총 4개 스테이지로 구성되었고, 스테이지마다 순차적으로 학습.
 
-## 👷github file structure
+## 👷코드 구조 
 
 **📁openvla_planner**
 
@@ -214,7 +235,7 @@
 - 학습시 나왔던 로그들을 저장해둠. 어떻게 학습이 되었는지 기록용
 
 
-## ⏬Installation
+## ⏬환경 구성
 
 torch version (qwen)
 
@@ -249,10 +270,9 @@ conda activate openvla
 python make_embeddings.py #embedding파일 생성.
 
 python openvla_planner/openvla_inference_code.py
-```
-- actor 환경 진입 및 실행(SmolVLM도 qwen 환경 사용)
 
-```
+#actor 환경 진입 및 실행(SmolVLM도 qwen 환경 사용)
+
 conda activate qwen
 
 #파일 실행시 openvla를 먼저 실행한 뒤 zeroMQ 서버가 열리고 qwen을 실행해야함.
