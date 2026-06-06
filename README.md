@@ -23,11 +23,11 @@
 생성한 action이 적절한지 **스스로 검토하는 단계**가 없음. 그 결과
 장기 과제(long-horizon task)에서 한 번의 잘못된 판단이 전체 실패로 이어지기 쉬움.
 
-이는 추측이 아니라 벤치마크에서 정량적으로 드러납니다. CoT-VLA 논문(Zhao et al., 2025)의
+이는 추측이 아니라 벤치마크에서 정량적으로 드러남. CoT-VLA 논문(Zhao et al., 2025)의
 LIBERO 평가표를 보면, **동일한 조건(3 seeds × 500 episodes)**에서 평가한 모델들 중
-재평가·검토 단계가 없는 단일 VLA들은 단기 과제에서는 높지만 Long suite에서만 50%대로 급락합니다.
+재평가·검토 단계가 없는 단일 VLA들은 단기 과제에서는 높지만 Long suite에서만 50%대로 급락함.
 
-**LIBERO 벤치마크 — Suite별 Success Rate (동일 평가 조건)**
+**LIBERO 벤치마크 — Task 별 Success Rate (동일 평가 조건)**
 
 | 모델 | 추론·검토 단계 | Spatial | Object | Goal | **Long** |
 |------|:------------:|:-------:|:------:|:----:|:--------:|
@@ -38,8 +38,8 @@ LIBERO 평가표를 보면, **동일한 조건(3 seeds × 500 episodes)**에서 
 
 > 위 4개는 **CoT-VLA 논문 Table 1의 동일 표에서** 같은 조건으로 평가된 수치.
 > 아키텍처가 달라도(autoregressive, diffusion) 검토 단계가 없으면 Long에서 50%대로 무너지는 반면,
-> **중간 추론 단계(visual chain-of-thought)를 추가한 CoT-VLA는 같은 Long suite에서 69.0%로,
-> 다른 suite와의 격차가 크게 줄어듦.** 변수는 "행동 전 검토 단계의 유무".
+> **중간 추론 단계(visual chain-of-thought)를 추가한 CoT-VLA는 같은 Long task에서 69.0%로,
+> 다른 task와의 격차가 크게 줄어듦.** 변수는 "행동 전 검토 단계의 유무".
 
 **→ 즉, "행동 전에 검토·교정하는 단계"의 유무가 long-horizon 성공률에 영향을 줌.**
 본 프로젝트의 비판적 재평가 구조는 바로 이 검토 단계를, **별도 모델(Actor)을 통한
@@ -55,7 +55,7 @@ LIBERO 평가표를 보면, **동일한 조건(3 seeds × 500 episodes)**에서 
 본 프로젝트는 이를 **역할 분리**로 해결.
 
 - **Planner (OpenVLA)** — 1차 action을 빠르게 제안
-- **Actor (Qwen2.5-VL)** — Planner의 제안을 비판적 재평가 텍스트와 함께 검토하고 교정
+- **Actor (SmolVLM 500B)** — Planner의 제안을 비판적 재평가 텍스트와 함께 검토하고 교정
 
 이는 사람의 "생각 → 점검 → 실행" 흐름을 모방한 듀얼 시스템 구조.
 
