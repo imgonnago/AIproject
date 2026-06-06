@@ -17,7 +17,7 @@
   <img src="https://img.shields.io/badge/Python-3.10-brightgreen?style=flat-square&label=Python&labelColor=%23eeeeee&color=%2355adf4"height="40"/>
 </a>
 
-## 🔎INTRODUCTION
+## 🔎소개 및 문제 정의
 
 기존 단일 VLA 모델은 시각·언어 입력으로부터 곧장 action을 생성하지만,
 생성한 action이 적절한지 **스스로 검토하는 단계가 없음**. 그 결과
