@@ -28,16 +28,16 @@
 - **Planner (OpenVLA)** — 1차 action을 빠르게 제안
 - **Actor (Qwen2.5-VL)** — Planner의 제안을 비판적 재평가 텍스트와 함께 검토하고 교정
 
-이는 사람의 "생각 → 점검 → 실행" 흐름을 모방한 듀얼 시스템 구조입니다.
+이는 사람의 "생각 → 점검 → 실행" 흐름을 모방한 듀얼 시스템 구조.
 
-이 프로젝트는 **모델 아키텍처와 파이프라인 구현을 완료**했으며, 학습은 자원(컴퓨팅·시간) 제약으로 다음 단계까지 진행했습니다.
+이 프로젝트는 **모델 아키텍처와 파이프라인 구현을 완료**했으며, 학습은 자원(컴퓨팅·시간) 제약으로 다음 단계까지 진행함.
 
 | 단계 | 상태 |
 |------|------|
-| 듀얼 시스템 아키텍처 설계 | ✅ 완료 |
-| Planner(OpenVLA) 추론 파이프라인 | ✅ 완료 |
-| Actor(SmolVLM 500B) 구성 (토크나이저 확장 · projection layer) | ✅ 완료 |
-| ZeroMQ 기반 프로세스 간 통신 | ✅ 완료 |
+| 듀얼 시스템 아키텍처 설계 | ✅ |
+| Planner(OpenVLA) 추론 파이프라인 | ✅ |
+| Actor(SmolVLM 500B) 구성 (토크나이저 확장 · projection layer) | ✅ |
+| ZeroMQ 기반 프로세스 간 통신 | ✅ |
 | **SFT — Actor의 action token 출력 + 텍스트 생성 능력** | 🟡 일부 학습, **정성적 동작 확인 완료** |
 | GRPO 강화학습 | ⬜ 미진행 (코드는 구현, 대규모 학습 미실행) |
 | LIBERO-long 정량 평가 | ⬜ 미진행 (컴퓨팅 자원 제약) |
@@ -118,9 +118,13 @@
 정량 벤치마크(success rate)는 미진행이나, 구현이 의도대로 동작함을 다음과 같이 정성적으로 확인함.
 
 - **Actor의 action token 출력** — SFT 이후 Actor가 추가된 256개 action token을 정상적으로 생성함을 확인
-- **텍스트 생성 능력 유지** — action token 학습 후에도 자연어 출력 능력이 유지됨을 확인
+- **텍스트 생성 능력** — action token 학습 후에도 자연어 출력 능력이 일부 유지됨 확인
+  > action token 생성 능력 학습으로 인해 텍스트 생성 능력 일부 약화 
 - **End-to-end 파이프라인** — Planner → ZeroMQ → Actor로 이어지는 데이터 흐름이 동작함을 확인
 
+![work](https://github.com/user-attachments/assets/52948375-398b-4432-8eab-1c4049e69324)
+
+> planner의 추론 action token을 학습 데이터로 사용하여 형식 학습. 성공적으로 7개 토큰 출력.
 > 정량 평가(LIBERO-long success rate, baseline 대비 비교)와 GRPO 학습은
 > 충분한 컴퓨팅 자원 확보 후 진행할 향후 과제입니다.
 
