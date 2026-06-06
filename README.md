@@ -125,7 +125,9 @@
 ![work](https://github.com/user-attachments/assets/52948375-398b-4432-8eab-1c4049e69324)
 
 > planner의 추론 action token을 학습 데이터로 사용하여 형식 학습. 성공적으로 7개 토큰 출력.
+> 
 > 정량 평가(LIBERO-long success rate, baseline 대비 비교)와 GRPO 학습은
+> 
 > 충분한 컴퓨팅 자원 확보 후 진행할 향후 과제입니다.
 
 ## 👷코드 구조 
