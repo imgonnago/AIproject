@@ -107,10 +107,10 @@
 
 | 문제 | 해결 | 상태 |
 |------|------|------|
-| OpenVLA(4096차원 action 임베딩)와 Smol 토크나이저의 임베딩 공간 불일치 | LLaVA projection layer를 참고한 **projection layer** 구현으로 차원 정합 | ✅ 구현 |
-| Smol LLM이 action을 토큰으로 다루지 못함 | LLM vocabulary에 OpenVLA의 **action token 256개 추가** | ✅ 구현 |
-| 두 모델이 독립 프로세스/환경에서 동작 | **ZeroMQ**로 프로세스 간 action token 중계 | ✅ 구현 |
-| 제한된 자원에서 7B+500B 모델 동시 운용 | 4bit 양자화 · Planner Frozen · Actor LoRA로 메모리 효율화 | ✅ 적용 |
+| OpenVLA(4096차원 action 임베딩)와 Smol 토크나이저의 임베딩 공간 불일치 | LLaVA projection layer를 참고한 **projection layer** 구현으로 차원 정합 | ✅ |
+| Smol LLM이 action을 토큰으로 다루지 못함 | LLM vocabulary에 OpenVLA의 **action token 256개 추가** | ✅ |
+| 두 모델이 독립 프로세스/환경에서 동작 | **ZeroMQ**로 프로세스 간 action token 중계 | ✅ |
+| 제한된 자원에서 7B+500B 모델 동시 운용 | 4bit 양자화 · Planner Frozen · Actor LoRA로 메모리 효율화 | ✅ |
 | Actor가 action token과 자연어를 함께 출력해야 함 | SFT로 두 출력 능력 학습 | 🟡 정성 확인 |
 
 ## 검증 결과 (Validation)
@@ -126,9 +126,7 @@
 
 > planner의 추론 action token을 학습 데이터로 사용하여 형식 학습. 성공적으로 7개 토큰 출력.
 > 
-> 정량 평가(LIBERO-long success rate, baseline 대비 비교)와 GRPO 학습은
-> 
-> 충분한 컴퓨팅 자원 확보 후 진행할 향후 과제입니다.
+> 정량 평가(LIBERO-long success rate, baseline 대비 비교)와 GRPO 학습은 충분한 컴퓨팅 자원 확보 후 진행할 향후 과제.
 
 ## 👷코드 구조 
 
