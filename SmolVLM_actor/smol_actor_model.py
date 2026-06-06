@@ -362,7 +362,7 @@ class ActorModel(nn.Module):
                 {"type": "text", "text": (
                     f"Task: {instruction}\n"
                     f"Critique: {critique_text}\n"
-                    f"Output corrected action tokens in this format:\n"
+                    f"Output exactly 7 corrected action tokens:\n"
                     f"{planner_str}"
                 )}
             ]

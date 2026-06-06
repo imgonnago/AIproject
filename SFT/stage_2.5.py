@@ -29,8 +29,8 @@ from libero.libero import benchmark
 from libero.libero.envs import OffScreenRenderEnv
 from SmolVLM_actor.smol_actor_model import ActorModel
 
-NUM_STEPS         = 800
-LEARNING_RATE     = 2e-4
+NUM_STEPS         = 500
+LEARNING_RATE     = 5e-4
 TASK_SUITE        = "libero_spatial"
 TASK_IDS          = [0, 1, 2, 3, 4]
 TASK_SWITCH_EVERY = 100
@@ -248,7 +248,7 @@ def train_stage2_5(actor: ActorModel):
         planner_bin = actor.action_tokenizer.openvla_ids_to_bin_indices(
             np.array(planner_tokens)
         )
-        action_str  = " ".join([f"<action_{b}>" for b in planner_bin])
+        action_str  = "".join([f"<action_{b}>" for b in planner_bin])
         eos         = actor.processor.tokenizer.eos_token
         target_text = f"{action_str}{eos}"
 
